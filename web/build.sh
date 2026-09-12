@@ -11,7 +11,10 @@ cp target/wasm32-unknown-unknown/release/edit_report_wasm.wasm web/
 
 echo "web/edit_report_wasm.wasm  $(du -h web/edit_report_wasm.wasm | cut -f1)"
 echo
-echo "Serve it — a module cannot be fetched from a file:// URL:"
+echo "For a single file that runs from file:// with no server at all:"
+echo "    ./web/build-single.sh"
+echo
+echo "Serve this build — a module cannot be fetched from a file:// URL:"
 echo "    python3 -m http.server --directory web 8080"
 echo
 echo "Any static server will do here. The two players read the files you pick"

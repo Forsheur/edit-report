@@ -10,8 +10,18 @@ import { demux, decodeEveryFrame } from './mp4.js';
 let wasm = null;
 let mem = () => new Uint8Array(wasm.memory.buffer);
 
-export async function load(url = './edit_report_wasm.wasm') {
-  const { instance } = await WebAssembly.instantiateStreaming(fetch(url), {});
+/// Bring up the measuring module.
+///
+/// Takes either a URL to fetch or the bytes themselves. Both, because the
+/// single-file build has no URL to fetch: `file://` refuses `fetch()` the same
+/// way it refuses `import`, so there the module arrives as bytes decoded from
+/// the page itself. One function rather than two so the served build and the
+/// saved build run the same code path from here on.
+export async function load(source = './edit_report_wasm.wasm') {
+  const bytes = source instanceof Uint8Array || source instanceof ArrayBuffer;
+  const { instance } = bytes
+    ? await WebAssembly.instantiate(source, {})
+    : await WebAssembly.instantiateStreaming(fetch(source), {});
   wasm = instance.exports;
   return wasm;
 }

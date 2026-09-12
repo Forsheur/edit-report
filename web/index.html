@@ -101,8 +101,10 @@ import { load, compare, style, script } from './edit-report.js';
 const $ = id => document.getElementById(id);
 const trouble = msg => { $('trouble').textContent = msg || ''; };
 
+// The single-file build defines this; the served build does not and the
+// module is fetched instead.
 let ready = false;
-load().then(() => {
+load(window.__EDIT_REPORT_WASM__ || './edit_report_wasm.wasm').then(() => {
   ready = true;
   // The report's look and behaviour come from the same Rust that the native
   // binary uses, rather than a second copy living here that would drift.

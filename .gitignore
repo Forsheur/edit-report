@@ -16,3 +16,7 @@
 
 # Build output of web/build.sh, not a source file.
 /web/*.wasm
+
+# Output of web/build-single.sh — a build artefact, published as a release
+# asset rather than committed.
+/dist/
