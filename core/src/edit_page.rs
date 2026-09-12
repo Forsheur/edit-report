@@ -88,8 +88,9 @@ pub struct PageInputs<'a> {
     pub seconds_examined: f64,
 }
 
+/// The whole thing as a standalone document, for the native binary.
 pub fn render(r: &DeclaredCorrespondence, inputs: &PageInputs) -> String {
-    let mut h = String::with_capacity(16_000);
+    let mut h = String::with_capacity(20_000);
     h.push_str("<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">\n");
     h.push_str("<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n");
     h.push_str(&format!(
@@ -98,6 +99,21 @@ pub fn render(r: &DeclaredCorrespondence, inputs: &PageInputs) -> String {
     ));
     h.push_str(STYLE);
     h.push_str("</head><body>\n");
+    h.push_str(&fragment(r, inputs));
+    h.push_str("<script>");
+    h.push_str(SCRIPT);
+    h.push_str("</script>\n</body></html>\n");
+    h
+}
+
+/// The report's markup on its own, for a host page that already has a head.
+///
+/// The browser build injects this into a page it controls, so the style and
+/// the behaviour are handed over separately (`STYLE`, `SCRIPT`) rather than
+/// baked in: a `<script>` arriving through `innerHTML` never runs, and a
+/// second copy of either would be a second thing to keep true.
+pub fn fragment(r: &DeclaredCorrespondence, inputs: &PageInputs) -> String {
+    let mut h = String::with_capacity(16_000);
 
     h.push_str(&format!(
         "<h1>Edit report — {}</h1>\n",
@@ -119,7 +135,7 @@ pub fn render(r: &DeclaredCorrespondence, inputs: &PageInputs) -> String {
     if !inputs.chain_passed {
         h.push_str(
             "<p>The comparison below is not shown: there is no established original to \
-             compare against.</p>\n</section>\n</body></html>\n",
+             compare against.</p>\n</section>\n",
         );
         return h;
     }
@@ -341,8 +357,6 @@ pub fn render(r: &DeclaredCorrespondence, inputs: &PageInputs) -> String {
     h.push_str(&limits(r, inputs));
 
     h.push_str(&shot_map(r));
-    h.push_str(SCRIPT);
-    h.push_str("</body></html>\n");
     h
 }
 
@@ -375,11 +389,21 @@ fn signature_block(r: &DeclaredCorrespondence) -> String {
     let mut out = String::new();
     out.push_str("<p>");
     match (r.tag_expected, r.tags_seen.as_slice()) {
-        (_, []) => out.push_str(
-            "No frame of the supplied file carries a readable recording signature. \
-             Nothing follows from that on its own: the strip is destroyed by a heavy \
-             recompression and removed by a crop.",
-        ),
+        (want, []) => {
+            if let Some(w) = want {
+                // Say which signature was expected even when none was found.
+                // A reader has to be able to check the claim, and "none read"
+                // without naming the target is half a sentence.
+                out.push_str(&format!(
+                    "This bundle's recording signature is <code>0x{w:04X}</code>. "
+                ));
+            }
+            out.push_str(
+                "No frame of the supplied file carries a readable recording signature. \
+                 Nothing follows from that on its own: the strip is destroyed by a heavy \
+                 recompression and removed by a crop.",
+            );
+        }
         (Some(want), seen) => {
             let mine = seen.iter().find(|(t, _)| *t == want).map(|(_, n)| *n);
             let others: Vec<String> = seen
@@ -494,7 +518,8 @@ fn limits(r: &DeclaredCorrespondence, inputs: &PageInputs) -> String {
     )
 }
 
-const STYLE: &str = r#"<style>
+/// The report's stylesheet, `<style>` tags included.
+pub const STYLE: &str = r#"<style>
 :root { color-scheme: light dark; --line:#d8d8d8; --dim:#666; --bad:#8a1c1c; --ok:#14532d; }
 @media (prefers-color-scheme: dark) { :root { --line:#333; --dim:#9a9a9a; --bad:#ff9a9a; --ok:#9ae6b4; } }
 body { margin:0 auto; padding:24px 16px 64px; max-width:1100px;
@@ -528,10 +553,18 @@ code { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
 </style>
 "#;
 
-const SCRIPT: &str = r#"<script>
-(function () {
+/// The report's behaviour, WITHOUT the `<script>` tags so a host page can
+/// inject it as a real script element — markup handed to `innerHTML` never
+/// executes the scripts inside it.
+pub const SCRIPT: &str = r#"
+// Callable again after the browser build injects a fresh report, hence a named
+// function rather than a bare IIFE. Wiring the same pair twice would double
+// every listener, so the elements are marked once.
+window.editReportLink = function () {
   var vo = document.getElementById('vo');
   var vc = document.getElementById('vc');
+  if (!vo || !vc || vc.dataset.wired === '1') return;
+  vc.dataset.wired = '1';
   var link = document.getElementById('link');
   var state = document.getElementById('linkstate');
   var shots = [];
@@ -652,8 +685,8 @@ const SCRIPT: &str = r#"<script>
         + 'players cannot seek — open the report over a server that does';
     }
   });
-})();
-</script>
+};
+if (document.getElementById('vc')) { window.editReportLink(); }
 "#;
 
 #[cfg(test)]

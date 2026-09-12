@@ -13,3 +13,6 @@
 # commit — 277 MB of video against 0.67 MB of project.
 /fixtures/bundles/
 /fixtures/derived*/
+
+# Build output of web/build.sh, not a source file.
+/web/*.wasm

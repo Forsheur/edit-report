@@ -184,8 +184,8 @@ core/   the library. No I/O, no video decoder, no network. Takes decoded
         frames and metadata; returns a correspondence table, cuts and
         classified differences. Compiles to wasm32.
 cli/    native binary. Decodes with ffmpeg, runs verify_bundle.py.
-wasm/   browser binding.                                   (milestone 2)
-web/    the page.                                          (milestone 2)
+wasm/   browser binding. A flat C interface, no wasm-bindgen.
+web/    the page. Demuxes and decodes with WebCodecs.
 ```
 
 **The decoder is outside the core, and that is the structural decision.** It buys
@@ -201,6 +201,34 @@ Edge since 94, Firefox desktop since 130, Safari complete only from 26.0 with a
 partial window between 16.4 and 18.7, Firefox for Android not at all. Audio
 alignment is therefore an optimisation that is used when available, never a
 prerequisite.
+
+### The browser build
+
+```
+./web/build.sh                       # cargo build --target wasm32-unknown-unknown
+python3 -m http.server --directory web 8080
+```
+
+That is the whole toolchain. `wasm/` exports a flat C interface — allocate,
+push a frame, ask for the report — and the JavaScript that drives it is written
+by hand, so **there is no wasm-bindgen and no generated code**. In a tool meant
+to be audited, glue a reader has to trust without having written it is a cost,
+and the surface here is small enough not to pay it. The module is under 200 kB.
+
+`web/mp4.js` is a small MP4 demuxer, present because WebCodecs deliberately has
+none: `VideoDecoder` takes encoded chunks and getting them out of a container
+is the caller's problem. The alternative — playing the file in a `<video>`
+element and catching frames as they are presented — runs in real time and drops
+frames whenever the tab is busy, and this tool reads **every** frame. Both
+container shapes are handled: fragmented (`moof`/`trun`), which is what a
+Forsheur phone writes, and progressive (`moov`/`stbl`), which is what a
+platform re-encode produces.
+
+**The browser does not check the cryptographic chain, and the report says so.**
+That check belongs to the bundle's own `verify_bundle.py`, which this project
+never re-implements — one implementation of the thing that must be right, not
+two — and there is no Python in a browser. Run it yourself and read its verdict
+beside the report.
 
 ### Decoder, and its licence
 

@@ -8,4 +8,5 @@
 
 pub mod bundle_dir;
 pub mod decode;
+pub mod editpass;
 pub mod pyverify;

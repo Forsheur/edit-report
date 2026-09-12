@@ -1,0 +1,11 @@
+[package]
+name = "edit-report-wasm"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+edit-report-core = { path = "../core" }

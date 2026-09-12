@@ -14,11 +14,12 @@
 //! It makes no network request of any kind. There is no HTTP client in this
 //! binary; the property is structural, not a promise.
 
-use edit_report::{bundle_dir, decode, pyverify};
+use edit_report::{bundle_dir, decode, editpass, pyverify};
 
 use edit_report_core::align::{self, Correspondence, Cut, Sample};
 use edit_report_core::bundle::Manifest;
 use edit_report_core::fingerprint::fingerprint;
+use edit_report_core::edit_page;
 use edit_report_core::html;
 use edit_report_core::normalize::Plan;
 use edit_report_core::qr::{sample_positions, QrFindings, ScanConfig, Survey};
@@ -42,7 +43,13 @@ OPTIONS:
     --bundle <PATH>        The evidence bundle holding the original. Required.
     --video <PATH>         The video to compare against it. Without this, the
                            report establishes the original and stops there.
-    --html <PATH>          Write the standalone HTML report here.
+    --html <PATH>          Write the edit report here: the shots, the joins
+                           between them, and the two players side by side.
+                           Needs --video; without one there is nothing to
+                           report on and --chain-html is written instead.
+    --chain-html <PATH>    Write the older blind-comparison report here — what
+                           the bundle establishes about the original, plus the
+                           correspondence found without reading the burn-in.
     --json <PATH>          Write the machine-readable report here.
     --qr-frames <N>        Frames to sweep for burned-in codes (default 24,
                            spread across the whole recording).
@@ -73,6 +80,7 @@ struct Args {
     bundle: PathBuf,
     video: Option<PathBuf>,
     html: Option<PathBuf>,
+    chain_html: Option<PathBuf>,
     json: Option<PathBuf>,
     qr_frames: u32,
     samples_per_second: f64,
@@ -87,6 +95,7 @@ fn parse_args() -> Result<Args, String> {
     let mut bundle = None;
     let mut video = None;
     let mut html = None;
+    let mut chain_html = None;
     let mut json = None;
     let mut qr_frames = 24u32;
     let mut samples_per_second = decode::SAMPLES_PER_SECOND;
@@ -112,6 +121,7 @@ fn parse_args() -> Result<Args, String> {
             "--bundle" => bundle = Some(next_path()?),
             "--video" => video = Some(next_path()?),
             "--html" => html = Some(next_path()?),
+            "--chain-html" => chain_html = Some(next_path()?),
             "--json" => json = Some(next_path()?),
             "--python" => {
                 python = it.next().map(|v| v.to_string_lossy().into_owned());
@@ -146,6 +156,7 @@ fn parse_args() -> Result<Args, String> {
         bundle: bundle.ok_or("--bundle is required")?,
         video,
         html,
+        chain_html,
         json,
         qr_frames,
         samples_per_second,
@@ -327,6 +338,10 @@ fn run(args: &Args) -> Result<ExitCode, Box<dyn std::error::Error>> {
     }
 
     // ── 4. The report ──────────────────────────────────────────────────────
+    // Taken before `crypto` moves into the report: the edit report quotes the
+    // same verdict rather than deriving a second one.
+    let chain_headline = crypto.headline().to_string();
+    let chain_verified = crypto.is_verified();
     let mut limits = universal_limits();
     limits.extend(milestone_limits(milestone));
     let span = manifest.capture_span_us();
@@ -372,15 +387,57 @@ fn run(args: &Args) -> Result<ExitCode, Box<dyn std::error::Error>> {
         limits,
     };
 
-    if let Some(p) = &args.html {
+    if let Some(p) = &args.chain_html {
         std::fs::write(p, html::render(&report))?;
-        eprintln!("Wrote {}", p.display());
+        eprintln!("Wrote {} (chain and blind comparison)", p.display());
     }
     if let Some(p) = &args.json {
         std::fs::write(p, report.to_json())?;
         eprintln!("Wrote {}", p.display());
     }
-    if args.html.is_none() && args.json.is_none() {
+
+    // ── 5. The edit report ─────────────────────────────────────────────────
+    //
+    // A second pass, and deliberately not folded into the one above. That one
+    // samples both sides to align a copy whose burn-in may be gone; this one
+    // reads EVERY frame of both and asks the original about each counter the
+    // copy declares. They answer different questions and neither subsumes the
+    // other, so they are run separately and reported separately.
+    if let Some(p) = &args.html {
+        match (&args.video, &original_video) {
+            (Some(copy_path), Some(orig_path)) if chain_verified => {
+                let r = edit_pass(
+                    orig_path,
+                    copy_path,
+                    manifest.session.short_id.as_deref().unwrap_or(""),
+                    &chain_headline,
+                    p,
+                )?;
+                eprintln!(
+                    "Wrote {} ({} shot(s), {} join(s))",
+                    p.display(),
+                    r.0,
+                    r.1
+                );
+            }
+            _ => {
+                std::fs::write(p, html::render(&report))?;
+                eprintln!(
+                    "Wrote {} — the chain report, because {}",
+                    p.display(),
+                    if args.video.is_none() {
+                        "no --video was given"
+                    } else if !chain_verified {
+                        "the original was not established"
+                    } else {
+                        "the bundle offered no readable picture"
+                    }
+                );
+            }
+        }
+    }
+
+    if args.html.is_none() && args.chain_html.is_none() && args.json.is_none() {
         print_summary(&report);
     }
 
@@ -388,6 +445,50 @@ fn run(args: &Args) -> Result<ExitCode, Box<dyn std::error::Error>> {
     // the recording. A bundle whose chain did not verify is a successful run
     // that reports a failed chain — the report is the output, not the code.
     Ok(ExitCode::SUCCESS)
+}
+
+/// Run the declaration pass and write the edit report. Returns (shots, joins).
+fn edit_pass(
+    original: &Path,
+    copy: &Path,
+    short_id: &str,
+    chain_headline: &str,
+    out: &Path,
+) -> Result<(usize, usize), Box<dyn std::error::Error>> {
+    eprintln!("Reading every frame of both files…");
+    let pass = editpass::run(original, copy, short_id)?;
+    eprintln!(
+        "  original {} frame(s), copy {} frame(s), {:.1}s",
+        pass.original_frames,
+        pass.copy_frames,
+        pass.elapsed.as_secs_f64()
+    );
+    if !pass.original_is_readable() {
+        eprintln!(
+            "  no machine-readable strip on any frame of the original — this recording \
+             predates it, so the report below establishes nothing about the shots"
+        );
+    }
+
+    let page = edit_page::render(
+        &pass.correspondence,
+        &edit_page::PageInputs {
+            short_id,
+            chain_verdict: chain_headline,
+            chain_passed: true,
+            original_src: &editpass::relative(out, original),
+            copy_src: &editpass::relative(out, copy),
+            original_label: &file_name_of(original).unwrap_or_default(),
+            copy_label: &file_name_of(copy).unwrap_or_default(),
+            frames_read: pass.copy_frames,
+            seconds_examined: (pass.copy_duration_us.max(0) as f64) / 1e6,
+        },
+    );
+    std::fs::write(out, page)?;
+    Ok((
+        pass.correspondence.segments.len(),
+        pass.correspondence.cuts.len(),
+    ))
 }
 
 /// Streams `verify_bundle.py --extract` wrote, as (stream id, path).

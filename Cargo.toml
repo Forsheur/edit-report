@@ -3,7 +3,7 @@
 # outside `core` — that is the whole point of the split.
 [workspace]
 resolver = "2"
-members = ["core", "cli"]
+members = ["core", "cli", "wasm"]
 
 [workspace.package]
 version = "0.1.0"

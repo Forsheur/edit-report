@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>edit-report</title>
+<style>
+  :root { color-scheme: light dark; --line:#d8d8d8; --dim:#666; --bad:#8a1c1c; }
+  @media (prefers-color-scheme: dark) { :root { --line:#333; --dim:#9a9a9a; --bad:#ff9a9a; } }
+  body { margin:0 auto; padding:24px 16px 64px; max-width:1100px;
+         font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+  h1 { font-size:22px; margin:0 0 4px; }
+  .lede { color:var(--dim); max-width:72ch; }
+  fieldset { border:1px solid var(--line); border-radius:6px; margin:18px 0; padding:14px 16px; }
+  legend { font-size:12px; color:var(--dim); padding:0 6px; }
+  label.row { display:block; margin:8px 0; font-size:14px; }
+  label.row span { display:inline-block; min-width:16em; color:var(--dim); }
+  input[type=text] { font:inherit; padding:3px 6px; min-width:14em; }
+  button.go { font:inherit; padding:7px 16px; cursor:pointer; }
+  button.go[disabled] { opacity:.5; cursor:default; }
+  #progress { font-size:13px; color:var(--dim); margin-left:10px; font-variant-numeric:tabular-nums; }
+  #trouble { color:var(--bad); white-space:pre-wrap; }
+  .caveat { font-size:13px; color:var(--dim); max-width:72ch; }
+</style>
+</head>
+<body>
+
+<h1>edit-report</h1>
+<p class="lede">
+  Compares a supplied video against one Forsheur recording, in your browser.
+  Nothing is uploaded: the files are read by this page and never leave the
+  machine. It reaches no verdict about the supplied file and gives it no score
+  — it describes what corresponds, what does not, and what could not be judged.
+</p>
+
+<fieldset>
+  <legend>1 · the original, from the evidence bundle</legend>
+  <label class="row"><span>Video from the bundle</span>
+    <input type="file" id="original" accept="video/*"></label>
+  <label class="row"><span>Recording id (short id)</span>
+    <input type="text" id="shortId" placeholder="lzvYrVDnmEMQ" size="16"></label>
+  <p class="caveat">
+    Unpack the bundle and run its own verifier first — <code>python3
+    verify_bundle.py . --extract</code> — then point this at
+    <code>extracted/back.mp4</code>. The short id is the tail of the QR URL;
+    with it, this page can check the two-byte signature burned into every
+    frame against the one this recording should carry.
+  </p>
+</fieldset>
+
+<fieldset>
+  <legend>2 · the file to examine</legend>
+  <label class="row"><span>Supplied video</span>
+    <input type="file" id="copy" accept="video/*"></label>
+</fieldset>
+
+<p>
+  <button class="go" id="go" disabled>Read every frame of both</button>
+  <span id="progress"></span>
+</p>
+<p id="trouble"></p>
+
+<div id="report"></div>
+
+<hr style="border:none;border-top:1px solid var(--line);margin:40px 0 16px">
+<p class="caveat">
+  <strong>What this page does not do.</strong> It does not check the
+  cryptographic chain. That check belongs to the bundle's own
+  <code>verify_bundle.py</code>, which this project deliberately never
+  re-implements — one implementation of the thing that must be right, not two,
+  and there is no Python in a browser. Run it yourself and read its verdict
+  next to this report. The report says as much where the chain would go.
+</p>
+
+<script type="module">
+import { load, compare, style, script } from './edit-report.js';
+
+const $ = id => document.getElementById(id);
+const trouble = msg => { $('trouble').textContent = msg || ''; };
+
+let ready = false;
+load().then(() => {
+  ready = true;
+  // The report's look and behaviour come from the same Rust that the native
+  // binary uses, rather than a second copy living here that would drift.
+  const s = document.createElement('style');
+  s.textContent = style().replace(/^<style>|<\/style>$/g, '');
+  document.head.appendChild(s);
+  refresh();
+}).catch(e => trouble(
+  'The measuring module did not load: ' + e + '\n' +
+  'Build it with web/build.sh, and open this page over http:// — a module ' +
+  'cannot be fetched from a file:// URL.'
+));
+
+function refresh() {
+  $('go').disabled = !(ready && $('original').files[0] && $('copy').files[0]);
+}
+$('original').addEventListener('change', refresh);
+$('copy').addEventListener('change', refresh);
+
+$('go').addEventListener('click', async () => {
+  $('go').disabled = true;
+  trouble('');
+  $('report').innerHTML = '';
+  const t0 = performance.now();
+  try {
+    if (typeof VideoDecoder === 'undefined') {
+      throw new Error('this browser has no WebCodecs, so it cannot decode the frames');
+    }
+    const r = await compare({
+      originalFile: $('original').files[0],
+      copyFile: $('copy').files[0],
+      shortId: $('shortId').value.trim(),
+      onProgress: (which, done, total) => {
+        $('progress').textContent = `${which}: ${done} / ${total} frames`;
+      },
+    });
+    const secs = ((performance.now() - t0) / 1000).toFixed(1);
+    $('progress').textContent =
+      `${r.originalFrames} + ${r.copyFrames} frames in ${secs}s`;
+
+    $('report').innerHTML = r.html;
+    // A script arriving through innerHTML never runs, so the behaviour is
+    // attached as a real element the first time and re-attached after that.
+    if (!window.editReportLink) {
+      const el = document.createElement('script');
+      el.textContent = script();
+      document.body.appendChild(el);
+    } else {
+      window.editReportLink();
+    }
+
+    if (r.originalDeclaring === 0) {
+      trouble('No machine-readable strip was found on any frame of the '
+        + 'original. This recording predates it, so nothing below establishes '
+        + 'anything about the shots.');
+    }
+  } catch (e) {
+    trouble('Could not complete: ' + (e && e.message ? e.message : e));
+  } finally {
+    $('go').disabled = false;
+  }
+});
+</script>
+</body>
+</html>
