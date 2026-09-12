@@ -1,0 +1,30 @@
+[package]
+name = "edit-report"
+description = "Compare a video against a Forsheur evidence bundle and report what differs."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "edit_report"
+path = "src/lib.rs"
+
+[[bin]]
+name = "edit-report"
+path = "src/main.rs"
+
+[dependencies]
+edit-report-core = { path = "../core" }
+serde.workspace = true
+serde_json.workspace = true
+# STORE-only archives written by `server/src/evidence_bundle.rs`; deflate is
+# enabled anyway because nothing guarantees a bundle reaches the user in the
+# form the server wrote it.
+zip = { version = "=2.4.2", default-features = false, features = ["deflate"] }
+tempfile = "=3.27.0"
+
+[dev-dependencies]
+serde_json.workspace = true
+tempfile = "=3.27.0"

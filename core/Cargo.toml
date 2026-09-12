@@ -1,0 +1,20 @@
+[package]
+name = "edit-report-core"
+description = "Edit report core: takes decoded frames, produces a provenance comparison. No I/O, no video decoder, no network."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+# Pure-Rust port of zxing. Chosen over binding a C library because this crate
+# must also compile to wasm32 for the browser build, and because a QR reader
+# operating on an already-decoded luma buffer belongs on this side of the
+# decoder boundary.
+rxing = { version = "=0.9.2", default-features = false, features = ["decoders", "encoders", "qrcode", "multi_barcode_readers", "encoding_rs"] }
+
+[dev-dependencies]
+serde_json.workspace = true

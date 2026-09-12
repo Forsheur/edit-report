@@ -1,0 +1,15 @@
+/target
+
+# Nothing derived is committed. The seed bundles are somebody's real
+# recording, tens of megabytes each, and the corpora built from them are
+# hundreds. Everything here is rebuilt on demand:
+#
+#     fixtures/fetch.sh          downloads and extracts the bundles
+#     fixtures/derive.sh         builds the blind-comparison corpus
+#     fixtures/derive_bitrow.sh  builds the machine-readable-strip corpus
+#
+# The glob matters: an earlier version named `/fixtures/derived/` exactly, and
+# `derived2/`, `derived3/` and `derived_bitrow_top/` went into the first
+# commit — 277 MB of video against 0.67 MB of project.
+/fixtures/bundles/
+/fixtures/derived*/
