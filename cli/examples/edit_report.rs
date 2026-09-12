@@ -15,7 +15,7 @@
 
 use edit_report::decode;
 use edit_report_core::bitrow;
-use edit_report_core::declared::{self, Declared, OriginalFrame, Tuning};
+use edit_report_core::declared::{self, Declared, JoinKind, OriginalFrame, Tuning};
 use edit_report_core::edit_page::{self, clock, PageInputs};
 use edit_report_core::fingerprint::fingerprint;
 use std::path::{Path, PathBuf};
@@ -68,17 +68,19 @@ fn parse() -> Result<Args, String> {
 /// One streamed pass: read the strip and fingerprint every frame.
 fn scan(
     path: &Path,
+    profile: &edit_report_core::report::MediaProfile,
     scale_against: Option<u32>,
 ) -> Result<(Vec<(Option<bitrow::RowReading>, u64, i64, u64)>, f64, usize), Box<dyn std::error::Error>>
 {
-    let profile = decode::probe(path, None)?;
+    // The caller already probed; probing again costs another ffprobe launch,
+    // which on these short files was most of the wall clock.
     let scale = match scale_against {
         Some(w) if w > 0 => profile.width as f32 / w as f32,
         _ => 1.0,
     };
     let mut rows = Vec::with_capacity(profile.frame_count.max(0) as usize);
     let t0 = Instant::now();
-    decode::decode_stream(path, &profile, 1, |frame| {
+    decode::decode_stream(path, profile, 1, |frame| {
         let reading = bitrow::read(&frame, scale).ok();
         let fp = fingerprint(&frame);
         rows.push((reading, fp.bits, frame.pts_us, frame.index));
@@ -107,8 +109,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let started = Instant::now();
-    let (orows, osecs, _) = scan(&args.original, None)?;
-    let (crows, csecs, _) = scan(&args.copy, Some(op.width))?;
+    let (orows, osecs, _) = scan(&args.original, &op, None)?;
+    let (crows, csecs, _) = scan(&args.copy, &cp, Some(op.width))?;
     println!(
         "read every frame: original {} in {:.1}s, copy {} in {:.1}s",
         orows.len(),
@@ -212,23 +214,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("  none");
     }
     for c in &r.cuts {
-        if c.goes_backwards() {
-            println!(
-                "  {}  f={} → f={} — the copy goes back {} frames",
-                clock(c.copy_at_us),
-                c.counter_before,
-                c.counter_after,
+        let what = match c.kind() {
+            JoinKind::Backwards => format!(
+                "the copy goes back {} frames",
                 c.counters_skipped().unsigned_abs()
-            );
-        } else {
-            println!(
-                "  {}  f={} → f={} — {} frames of the original absent",
-                clock(c.copy_at_us),
-                c.counter_before,
-                c.counter_after,
-                c.counters_skipped()
-            );
-        }
+            ),
+            JoinKind::Removal => format!(
+                "{} frames of the original absent ({:.2}s)",
+                c.counters_skipped(),
+                (-c.inserted_us()) as f64 / 1e6
+            ),
+            JoinKind::Insertion => format!(
+                "{:.2}s here that the original does not account for",
+                c.inserted_us() as f64 / 1e6
+            ),
+        };
+        println!(
+            "  {}  f={} → f={} — {}",
+            clock(c.copy_at_us),
+            c.counter_before,
+            c.counter_after,
+            what
+        );
+    }
+
+    println!("\nstretches corresponding to nothing in the original");
+    if r.unconfirmed.is_empty() {
+        println!("  none");
+    }
+    for u in &r.unconfirmed {
+        println!(
+            "  {} → {}  {} frame(s), {} with a frame number, {} contradicted",
+            clock(u.copy_start_us),
+            clock(u.copy_end_us),
+            u.frames_examined,
+            u.frames_declaring,
+            u.frames_contradicted
+        );
     }
 
     let differing: usize = r.segments.iter().map(|s| s.differing.len()).sum();

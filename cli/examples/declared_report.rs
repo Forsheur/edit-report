@@ -177,6 +177,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 copy_index: f.index,
                 copy_t_us: f.pts_us,
                 counter: r.counter,
+                tag: r.session_tag,
                 fp: fingerprint(&n),
             });
         },
@@ -224,7 +225,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             s.counter_start,
             s.counter_end,
             s.frames_confirmed,
-            s.mean_distance,
+            s.worst_confirmed_distance,
         );
     }
     for c in &r.cuts {

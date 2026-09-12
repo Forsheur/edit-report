@@ -12,7 +12,9 @@
 //! no verdict, gives the recording no score, and says "no correspondence was
 //! established" where it has nothing — never "falsification".
 
-use crate::declared::{DeclaredCorrespondence, DeclaredSegment, FrameNote, NoteReason};
+use crate::declared::{
+    DeclaredCorrespondence, DeclaredSegment, FrameNote, JoinKind, NoteReason,
+};
 
 fn esc(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -33,6 +35,11 @@ fn esc(s: &str) -> String {
 pub fn clock(us: i64) -> String {
     let t = us.max(0);
     format!("{}:{:05.2}", t / 60_000_000, (t % 60_000_000) as f64 / 1e6)
+}
+
+/// A span in seconds, for prose rather than for seeking.
+fn duration(us: i64) -> String {
+    format!("{:.2}s", (us.abs() as f64) / 1e6)
 }
 
 fn secs(us: i64) -> String {
@@ -137,6 +144,11 @@ pub fn render(r: &DeclaredCorrespondence, inputs: &PageInputs) -> String {
         esc(inputs.copy_label),
         esc(inputs.copy_src)
     ));
+    h.push_str(
+        "<p class=\"linkbar\"><label><input type=\"checkbox\" id=\"link\" checked> \
+         Keep the two players together</label> \
+         <span id=\"linkstate\" class=\"note\"></span></p>\n",
+    );
     h.push_str("</section>\n");
 
     // ── Shots ────────────────────────────────────────────────────────────
@@ -178,21 +190,29 @@ pub fn render(r: &DeclaredCorrespondence, inputs: &PageInputs) -> String {
         h.push_str("<ul class=\"cuts\">\n");
         for c in &r.cuts {
             let skipped = c.counters_skipped();
-            let body = if c.goes_backwards() {
-                format!(
+            let body = match c.kind() {
+                JoinKind::Backwards => format!(
                     "the file goes back: frame {} is followed by frame {}, \
                      {} frames earlier in the original",
                     c.counter_before,
                     c.counter_after,
                     skipped.unsigned_abs()
-                )
-            } else {
-                format!(
-                    "frame {} is followed by frame {} — {} frames of the original are absent",
+                ),
+                JoinKind::Removal => format!(
+                    "frame {} is followed by frame {} — {} frames of the original are \
+                     absent, {} of it",
                     c.counter_before,
                     c.counter_after,
-                    skipped.max(0)
-                )
+                    skipped.max(0),
+                    duration(-c.inserted_us())
+                ),
+                JoinKind::Insertion => format!(
+                    "frame {} is followed by frame {}, and {} of the file sits between \
+                     them that the original does not account for",
+                    c.counter_before,
+                    c.counter_after,
+                    duration(c.inserted_us())
+                ),
             };
             h.push_str(&format!(
                 "<li>{} — {}<br><span class=\"sub\">the original runs on from {} \
@@ -225,12 +245,56 @@ pub fn render(r: &DeclaredCorrespondence, inputs: &PageInputs) -> String {
     }
     h.push_str("</section>\n");
 
+    // ── Stretches that correspond to nothing ─────────────────────────────
+    //
+    // The most important thing on the page when it is not empty, and it used
+    // to be missing: inserted material sits BETWEEN two shots, so a report
+    // that only walked the inside of each shot showed a second of foreign
+    // footage as nothing at all.
+    h.push_str("<section><h2>4 · Stretches that correspond to nothing in the original</h2>\n");
+    if r.unconfirmed.is_empty() {
+        h.push_str("<p>None. Every part of the file was placed in the original.</p>\n");
+    } else {
+        h.push_str(
+            "<p>Nothing in the original was found for these. That has innocent readings — a \
+             title card, a logo, a passage recompressed past the point where the strip \
+             survives — and it is also what inserted material looks like. The two players \
+             are the way to tell.</p>\n<ul class=\"cuts\">\n",
+        );
+        for u in &r.unconfirmed {
+            h.push_str(&format!(
+                "<li>{} → {} ({}, {} frames) — {}</li>\n",
+                at(u.copy_start_us, None, &clock(u.copy_start_us)),
+                at(u.copy_end_us, None, &clock(u.copy_end_us)),
+                esc(&duration(u.copy_end_us - u.copy_start_us)),
+                u.frames_examined,
+                esc(&match (u.frames_declaring, u.frames_contradicted) {
+                    (0, _) => "no frame here carries a readable strip, so no question was \
+                               put to the original at all. Whether this is inserted \
+                               material or simply unreadable is not settled here — \
+                               section 3 says whether the join around it accounts for the \
+                               time"
+                        .to_string(),
+                    (d, 0) => format!(
+                        "{d} frame(s) carry a frame number the original does not have"
+                    ),
+                    (d, c) => format!(
+                        "{d} frame(s) carry a frame number; {c} of them name a moment of \
+                         the original and do not look like it"
+                    ),
+                }),
+            ));
+        }
+        h.push_str("</ul>\n");
+    }
+    h.push_str("</section>\n");
+
     // ── Frames that differ ───────────────────────────────────────────────
-    h.push_str("<section><h2>4 · Frames whose picture differs from the original's</h2>\n");
+    h.push_str("<section><h2>5 · Frames whose picture differs from the original's</h2>\n");
     let total_differing: usize = r.segments.iter().map(|s| s.differing.len()).sum();
     if total_differing == 0 {
         h.push_str(
-            "<p>None, among the frames that could be judged. See section 5 for the frames \
+            "<p>None, among the frames that could be judged. See section 6 for the frames \
              that could not.</p>\n",
         );
     } else {
@@ -249,7 +313,7 @@ pub fn render(r: &DeclaredCorrespondence, inputs: &PageInputs) -> String {
 
     // ── Inconclusive ─────────────────────────────────────────────────────
     let total_inconclusive: usize = r.segments.iter().map(|s| s.inconclusive.len()).sum();
-    h.push_str("<section><h2>5 · Frames nothing could be established about</h2>\n");
+    h.push_str("<section><h2>6 · Frames nothing could be established about</h2>\n");
     h.push_str(&format!(
         "<p>{} frame(s). These are not evidence of anything, in either direction. \
          A frame is here because its strip could not be read — too compressed, too \
@@ -276,9 +340,35 @@ pub fn render(r: &DeclaredCorrespondence, inputs: &PageInputs) -> String {
     // ── What this cannot say ─────────────────────────────────────────────
     h.push_str(&limits(r, inputs));
 
+    h.push_str(&shot_map(r));
     h.push_str(SCRIPT);
     h.push_str("</body></html>\n");
     h
+}
+
+/// The shots, as the correspondence the linked players follow.
+///
+/// The offset between the two files is NOT constant — that is the whole point
+/// of a cut. On the removal case it is 0 before 0:07.97 and +6 s after, so a
+/// pair of players held at a fixed delta would be showing two different
+/// moments for most of the file. Each shot carries its own mapping and the
+/// page interpolates inside it.
+fn shot_map(r: &DeclaredCorrespondence) -> String {
+    let mut out = String::from("<script id=\"shots\" type=\"application/json\">[");
+    for (i, s) in r.segments.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(&format!(
+            "{{\"c0\":{},\"c1\":{},\"o0\":{},\"o1\":{}}}",
+            secs(s.copy_start_us),
+            secs(s.copy_end_us),
+            secs(s.original_start_us),
+            secs(s.original_end_us)
+        ));
+    }
+    out.push_str("]</script>\n");
+    out
 }
 
 fn signature_block(r: &DeclaredCorrespondence) -> String {
@@ -359,6 +449,11 @@ fn frame_line(shot: usize, n: &FrameNote) -> String {
             "declares a frame number the original does not have".to_string()
         }
         NoteReason::NoDeclaration => "no readable strip".to_string(),
+        NoteReason::TooFarToJudge => match n.distance {
+            Some(d) => format!("{d} of 63 bits apart — too far to confirm, not far enough to \
+                                call it a different picture"),
+            None => "the fingerprint did not settle it".to_string(),
+        },
     };
     let which = match n.counter {
         Some(c) => format!("frame {c}"),
@@ -380,7 +475,7 @@ fn limits(r: &DeclaredCorrespondence, inputs: &PageInputs) -> String {
         0.0
     };
     format!(
-        "<section><h2>6 · What this report cannot say</h2>\n<ul class=\"limits\">\n\
+        "<section><h2>7 · What this report cannot say</h2>\n<ul class=\"limits\">\n\
          <li>{} frames were read, {:.1} per second of the supplied file. Nothing is claimed \
          about a moment that was not read.</li>\n\
          <li>The picture comparison uses a 63-bit fingerprint of each frame's coarse \
@@ -414,6 +509,8 @@ h2 { font-size:16px; margin:32px 0 8px; padding-bottom:4px; border-bottom:1px so
 .players figure { flex:1 1 300px; margin:0; min-width:0; }
 .players figcaption { font-size:12px; color:var(--dim); margin-bottom:4px; }
 .players video { width:100%; max-height:42vh; background:#000; }
+.linkbar { margin:6px 0 0; font-size:13px; display:flex; gap:10px; align-items:center; }
+.players figure.adrift video { outline:2px solid var(--bad); outline-offset:-2px; }
 .repick { display:inline-block; font-size:12px; color:var(--dim); margin-top:4px; cursor:pointer; }
 .repick input { display:none; }
 table { border-collapse:collapse; width:100%; font-size:14px; }
@@ -435,6 +532,86 @@ const SCRIPT: &str = r#"<script>
 (function () {
   var vo = document.getElementById('vo');
   var vc = document.getElementById('vc');
+  var link = document.getElementById('link');
+  var state = document.getElementById('linkstate');
+  var shots = [];
+  try { shots = JSON.parse(document.getElementById('shots').textContent) || []; } catch (e) {}
+
+  // Where a moment of the supplied file sits in the original.
+  //
+  // Inside a shot, by interpolation: the two run at the same rate there, and a
+  // shot of a re-encoded copy is not always exactly as long as the original's,
+  // so mapping the ends and interpolating between them beats adding a fixed
+  // offset. Outside every shot — inserted material, an unreadable passage —
+  // there is NO answer, and the honest thing is to say so rather than park the
+  // original at whatever is nearest.
+  function toOriginal(t) {
+    for (var i = 0; i < shots.length; i++) {
+      var s = shots[i];
+      if (t >= s.c0 - 0.02 && t <= s.c1 + 0.02) {
+        var span = s.c1 - s.c0;
+        var f = span > 0.001 ? (t - s.c0) / span : 0;
+        return s.o0 + (s.o1 - s.o0) * f;
+      }
+    }
+    return null;
+  }
+
+  var applying = false;          // guard against the echo of our own seek
+  function linked() { return link && link.checked; }
+
+  function setAdrift(yes, why) {
+    var fig = vo.closest('figure');
+    if (fig) fig.classList.toggle('adrift', !!yes);
+    if (state) state.textContent = yes ? why : '';
+  }
+
+  // Put the original where the supplied file currently is.
+  function follow(force) {
+    if (!linked() || applying) return;
+    var t = toOriginal(vc.currentTime);
+    if (t === null) {
+      // Nothing in the original corresponds to this moment. Freeze rather
+      // than drift: a player showing an unrelated frame beside a claim is
+      // worse than a player that has stopped.
+      if (!vo.paused) vo.pause();
+      setAdrift(true, 'the original has no counterpart to this moment — it is held still');
+      return;
+    }
+    setAdrift(false, '');
+    if (force || Math.abs(vo.currentTime - t) > 0.15) {
+      applying = true;
+      try { vo.currentTime = t; } catch (e) {}
+      setTimeout(function () { applying = false; }, 0);
+    }
+  }
+
+  vc.addEventListener('seeked', function () { follow(true); });
+  vc.addEventListener('timeupdate', function () { follow(false); });
+  vc.addEventListener('play', function () {
+    if (linked() && toOriginal(vc.currentTime) !== null) { vo.play().catch(function () {}); }
+  });
+  vc.addEventListener('pause', function () {
+    if (!linked()) return;
+    vo.pause();
+    // Land exactly on pause. While both are rolling the correction is kept
+    // loose on purpose — seeking a playing video to shave off a tenth of a
+    // second makes it stutter, and nobody compares two frames mid-playback.
+    // The moment you stop is the moment it has to be exact.
+    follow(true);
+  });
+  vc.addEventListener('ratechange', function () { if (linked()) vo.playbackRate = vc.playbackRate; });
+
+  // The original is the reference, so driving it drives nothing back — except
+  // pausing, which must stop both or the pair silently drifts apart.
+  vo.addEventListener('pause', function () { if (linked() && !vc.paused) vc.pause(); });
+
+  if (link) {
+    link.addEventListener('change', function () {
+      if (link.checked) { follow(true); } else { setAdrift(false, ''); }
+    });
+  }
+
   // Seek, then pause: the point is to compare two still frames, and a player
   // that keeps rolling has moved off the frame by the time you look at it.
   function seek(v, t) {
@@ -444,10 +621,19 @@ const SCRIPT: &str = r#"<script>
   document.addEventListener('click', function (e) {
     var b = e.target.closest && e.target.closest('button.at');
     if (!b) return;
+    applying = true;
     seek(vc, b.dataset.copy);
-    seek(vo, b.dataset.orig);
+    if (b.dataset.orig !== undefined) {
+      seek(vo, b.dataset.orig);
+      setAdrift(false, '');
+    } else {
+      vo.pause();
+      setAdrift(true, 'the original has no counterpart to this moment — it is held still');
+    }
+    setTimeout(function () { applying = false; }, 0);
     (vo || vc).scrollIntoView({ block: 'start', behavior: 'smooth' });
   });
+
   // The report may travel without the videos beside it; let the reader point
   // each player at a local file rather than leaving a dead page.
   document.querySelectorAll('.repick input').forEach(function (i) {
@@ -455,6 +641,16 @@ const SCRIPT: &str = r#"<script>
       var v = document.getElementById(i.dataset.for);
       if (v && i.files && i.files[0]) v.src = URL.createObjectURL(i.files[0]);
     });
+  });
+
+  // A file served without HTTP range support reports seekable = [0,0] and
+  // every seek here is silently ignored. Say so once rather than let the
+  // reader conclude the report is broken.
+  vc.addEventListener('loadeddata', function () {
+    if (vc.seekable.length && vc.seekable.end(0) === 0 && state) {
+      state.textContent = 'this server does not answer range requests, so the '
+        + 'players cannot seek — open the report over a server that does';
+    }
   });
 })();
 </script>
@@ -601,10 +797,79 @@ mod tests {
             counter_after: 4,
             original_left_us: 19_470_000,
             original_resumed_us: 100_000,
+            copy_left_us: 9_730_000,
+            copy_resumed_us: 9_770_000,
         }];
         let h = render(&r, &inputs());
         assert!(h.contains("the file goes back"), "{h}");
         assert!(h.contains("585 frames earlier"));
+    }
+
+    #[test]
+    fn inserted_material_is_a_section_of_its_own() {
+        // It sits BETWEEN two shots, so walking only the inside of each shot
+        // showed a second of foreign footage as nothing at all.
+        let mut r = base();
+        r.unconfirmed = vec![crate::declared::UnconfirmedStretch {
+            copy_start_us: 8_970_000,
+            copy_end_us: 10_000_000,
+            frames_examined: 31,
+            frames_declaring: 3,
+            frames_contradicted: 2,
+        }];
+        let h = render(&r, &inputs());
+        assert!(h.contains("correspond to nothing in the original"));
+        assert!(h.contains("1.03s, 31 frames"), "{h}");
+        assert!(h.contains("do not look like it"), "{h}");
+    }
+
+    #[test]
+    fn an_insertion_is_not_worded_as_a_removal() {
+        let mut r = base();
+        r.cuts = vec![DeclaredCut {
+            copy_at_us: 9_480_000,
+            counter_before: 270,
+            counter_after: 271,
+            original_left_us: 8_970_000,
+            original_resumed_us: 9_000_000,
+            copy_left_us: 8_970_000,
+            copy_resumed_us: 10_000_000,
+        }];
+        assert_eq!(r.cuts[0].kind(), crate::declared::JoinKind::Insertion);
+        let h = render(&r, &inputs());
+        assert!(h.contains("the original does not account for"), "{h}");
+        assert!(!h.contains("frames of the original are absent"));
+    }
+
+    #[test]
+    fn the_shot_map_is_emitted_for_the_linked_players() {
+        // A fixed delta would be wrong the moment there is a cut, so each shot
+        // carries its own mapping.
+        let mut r = base();
+        r.segments.push(DeclaredSegment {
+            copy_start_us: 8_000_000,
+            copy_end_us: 13_730_000,
+            counter_start: 421,
+            counter_end: 593,
+            original_start_us: 14_000_000,
+            original_end_us: 19_730_000,
+            frames_examined: 173,
+            frames_confirmed: 173,
+            differing: vec![],
+            inconclusive: vec![],
+            worst_confirmed_distance: 2,
+        });
+        let h = render(&r, &inputs());
+        assert!(h.contains(r#"{"c0":0.000,"c1":7.730,"o0":0.000,"o1":7.730}"#), "{h}");
+        assert!(h.contains(r#"{"c0":8.000,"c1":13.730,"o0":14.000,"o1":19.730}"#), "{h}");
+        assert!(h.contains("id=\"link\""));
+    }
+
+    #[test]
+    fn a_moment_outside_every_shot_holds_the_original_still() {
+        let h = render(&base(), &inputs());
+        assert!(h.contains("return null;"), "toOriginal must refuse");
+        assert!(h.contains("held still"));
     }
 
     #[test]

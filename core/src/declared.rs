@@ -90,6 +90,9 @@ pub enum NoteReason {
     /// original. Neither conforming nor differing — this is the third state,
     /// and it must stay populated.
     NoDeclaration,
+    /// The question was put and the fingerprint did not settle it: too far to
+    /// confirm, not far enough to call a different picture.
+    TooFarToJudge,
 }
 
 /// How a single copy frame stands against the original.
@@ -100,6 +103,9 @@ pub enum FrameVerdict {
     Confirmed,
     /// Declared a frame of the original, and does not look like it.
     Contradicted,
+    /// Declared a frame of the original and the pictures neither agree nor
+    /// plainly disagree. Not evidence in either direction.
+    Unsettled,
     /// Declared a counter the original does not have.
     DeclaredOutsideOriginal,
     /// No counter could be read from the picture.
@@ -114,6 +120,22 @@ pub enum FrameVerdict {
 /// platform did to it, and a re-encode down to 150 kbit/s moves a fingerprint
 /// by a couple of bits on this material.
 pub const CONFIRM_DISTANCE: u32 = 16;
+
+/// Distance at or above which the two pictures are taken to be different
+/// pictures, rather than the same one after a rough journey.
+///
+/// One threshold is not enough, and using one made the report accuse a copy
+/// that had only been recompressed: at 150 kbit/s on real material three
+/// frames of a faithful Android recording crossed 16, and were listed as
+/// differing. Two thresholds give the band in between its own name. Frames
+/// there are not conforming and are not differing — they are frames the
+/// fingerprint cannot settle, which is what the third state is for and why it
+/// has to stay well populated.
+///
+/// Two unrelated pictures sit near 31 of 63 by construction, since half the
+/// bits agree by chance. 26 is clear of the recompression noise and clear of
+/// chance.
+pub const DIFFER_DISTANCE: u32 = 26;
 
 /// A stretch of copy whose frames confirm a continuous run of the original.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -157,6 +179,26 @@ pub struct DeclaredCut {
     pub counter_after: u64,
     pub original_left_us: i64,
     pub original_resumed_us: i64,
+    /// Where the two shots end and resume in the copy, so the copy's own
+    /// elapsed time across the join can be compared with the original's.
+    pub copy_left_us: i64,
+    pub copy_resumed_us: i64,
+}
+
+/// What kind of join this is. Reading the counters alone cannot tell removal
+/// from insertion — both leave a gap between two shots — so the two elapsed
+/// times decide it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JoinKind {
+    /// The original runs on further than the copy does: material of the
+    /// original is not here.
+    Removal,
+    /// The copy runs on further than the original does: time was spent here
+    /// on something the original does not account for.
+    Insertion,
+    /// The copy returns to an earlier moment of the original.
+    Backwards,
 }
 
 impl DeclaredCut {
@@ -168,6 +210,31 @@ impl DeclaredCut {
     pub fn goes_backwards(&self) -> bool {
         self.counters_skipped() < 0
     }
+
+    /// Copy time across the join that the original does not account for.
+    ///
+    /// Positive means the copy lingered where the original moved on — that is
+    /// material the original does not have. Negative means the original moved
+    /// on where the copy did not — that is material of the original missing.
+    ///
+    /// Both show up as a gap between two shots, which is why counting skipped
+    /// counters alone got an insertion of 30 frames reported as "1 frame of
+    /// the original absent" — true, and beside the point.
+    pub fn inserted_us(&self) -> i64 {
+        let copy_gap = self.copy_resumed_us - self.copy_left_us;
+        let original_gap = self.original_resumed_us - self.original_left_us;
+        copy_gap - original_gap
+    }
+
+    pub fn kind(&self) -> JoinKind {
+        if self.goes_backwards() {
+            JoinKind::Backwards
+        } else if self.inserted_us() > 0 {
+            JoinKind::Insertion
+        } else {
+            JoinKind::Removal
+        }
+    }
 }
 
 /// What the caller has to tell the core, because the core cannot know it.
@@ -175,6 +242,9 @@ impl DeclaredCut {
 pub struct Tuning {
     /// Distance at or below which a picture confirms its declaration.
     pub confirm_distance: u32,
+    /// Distance at or above which the pictures are taken to be different.
+    /// Between the two the frame is inconclusive, never differing.
+    pub differ_distance: u32,
     /// Floor on the continuity tolerance, in microseconds.
     ///
     /// It exists to absorb the step between two examined frames, so it belongs
@@ -191,6 +261,7 @@ impl Default for Tuning {
     fn default() -> Self {
         Tuning {
             confirm_distance: CONFIRM_DISTANCE,
+            differ_distance: DIFFER_DISTANCE,
             continuity_floor_us: CONTINUITY_FLOOR_US,
             expected_tag: None,
         }
@@ -315,6 +386,15 @@ pub fn verify(
     original: &[OriginalFrame],
     confirm_distance: u32,
 ) -> (Vec<FrameVerdict>, Vec<f32>) {
+    verify_with(copy, original, confirm_distance, DIFFER_DISTANCE)
+}
+
+pub fn verify_with(
+    copy: &[Declared],
+    original: &[OriginalFrame],
+    confirm_distance: u32,
+    differ_distance: u32,
+) -> (Vec<FrameVerdict>, Vec<f32>) {
     let mut verdicts = Vec::with_capacity(copy.len());
     let mut distances = Vec::with_capacity(copy.len());
     for c in copy {
@@ -345,8 +425,10 @@ pub fn verify(
         distances.push(d as f32);
         verdicts.push(if d <= confirm_distance {
             FrameVerdict::Confirmed
-        } else {
+        } else if d >= differ_distance {
             FrameVerdict::Contradicted
+        } else {
+            FrameVerdict::Unsettled
         });
     }
     (verdicts, distances)
@@ -397,7 +479,12 @@ pub fn build_with(
     let original = consistent_original(original);
     let original = &original[..];
 
-    let (verdicts, distances) = verify(copy, original, confirm_distance);
+    let (verdicts, distances) = verify_with(
+        copy,
+        original,
+        confirm_distance,
+        tuning.differ_distance.max(confirm_distance + 1),
+    );
 
     let frames_declaring = copy.iter().filter(|c| c.counter.is_some()).count();
     let frames_confirmed = verdicts
@@ -502,6 +589,9 @@ pub fn build_with(
                     FrameVerdict::DeclaredOutsideOriginal => {
                         differing.push(note(NoteReason::NotInOriginal, None))
                     }
+                    FrameVerdict::Unsettled => {
+                        inconclusive.push(note(NoteReason::TooFarToJudge, d))
+                    }
                     FrameVerdict::NoDeclaration => {
                         inconclusive.push(note(NoteReason::NoDeclaration, None))
                     }
@@ -532,7 +622,9 @@ pub fn build_with(
             // end a run: the reader refuses roughly half of them, and treating
             // each refusal as a boundary chopped a faithful copy into
             // twenty-odd two-frame segments with no edit anywhere near them.
-            FrameVerdict::NoDeclaration => continue,
+            // Same for a frame the fingerprint could not settle: it is not
+            // evidence, so it must not end a run either.
+            FrameVerdict::NoDeclaration | FrameVerdict::Unsettled => continue,
             // These two do say something: a frame that names a moment of the
             // original and does not look like it, or names one the original
             // does not have, is positive evidence of other material here.
@@ -775,6 +867,8 @@ fn cuts_between(segments: &[DeclaredSegment]) -> Vec<DeclaredCut> {
             counter_after: w[1].counter_start,
             original_left_us: w[0].original_end_us,
             original_resumed_us: w[1].original_start_us,
+            copy_left_us: w[0].copy_end_us,
+            copy_resumed_us: w[1].copy_start_us,
         })
         .collect()
 }
@@ -830,6 +924,12 @@ fn unconfirmed_between(
                     .count(),
             }
         })
+        // A join between two shots always leaves a sliver — one frame period
+        // wide — between the end of one and the start of the next. With every
+        // frame read there is nothing inside it, and reporting an empty
+        // stretch as "corresponding to nothing" invites the reader to look for
+        // something that is not there.
+        .filter(|u: &UnconfirmedStretch| u.frames_examined > 0)
         .collect()
 }
 

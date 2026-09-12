@@ -10,7 +10,10 @@ cd "$(dirname "$0")"
 
 SEED_SHORT="${SEED_SHORT:-3gvqtL7Y7HZL}"
 OTHER_SHORT="${OTHER_SHORT:-olLp8YUjH1kH}"
-OUT=derived
+# Overridable so a second corpus from another seed does not overwrite the
+# first: `derived2/` and `derived3/` were built this way and nothing recorded
+# how, which is exactly what made them un-reproducible and got them committed.
+OUT="${OUT:-derived}"
 mkdir -p "$OUT"
 
 seed_root="$(dirname "$(find "bundles/$SEED_SHORT" -name manifest.json | head -1)")"

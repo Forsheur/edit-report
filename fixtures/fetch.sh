@@ -12,6 +12,14 @@ mkdir -p bundles
 SEEDS=(
   "3gvqtL7Y7HZL:d3153f66-fb43-4663-b3dc-0a867b66312e"
   "olLp8YUjH1kH:e399b548-f3cd-4e2c-a10b-e46a5ab4e7bf"
+  # 2026-09-12, the first four recordings carrying the machine-readable strip
+  # at the top of the frame — iOS and Android, portrait and landscape. The
+  # strip reads on 100 % of frames on all four, which is why they are the
+  # reference material for `derive_bitrow.sh`.
+  "lzvYrVDnmEMQ:584b1f92-cfab-46f9-bf79-5edca345335a"   # iOS, portrait
+  "ECFgZSmG0Zq1:90b267f2-03db-4a9f-93af-e425af071e75"   # iOS, landscape
+  "cDPqjF4rgKHX:83b33937-f0e0-41e9-bf78-2327ef97c7c1"   # Android, portrait
+  "vYvhiLEQ3pUm:446f9acf-f6c8-441e-ab7b-e48322970fba"   # Android, landscape
 )
 
 for pair in "${SEEDS[@]}"; do
@@ -39,5 +47,15 @@ for pair in "${SEEDS[@]}"; do
     echo "$short: refreshing verify_bundle.py from the working tree (pre-deploy)"
     cp "$repo_verifier" "$root/verify_bundle.py"
   fi
+  # Extract the media. Everything downstream reads `extracted/back.mp4`, and
+  # the extraction is the verifier's own job — the tool never opens a chunk
+  # itself, so that the picture it compares is the one the chain covers.
+  (cd "$root" && python3 verify_bundle.py . --extract >/dev/null) \
+    || echo "$short: verify/extract did not complete — see $root"
   echo "$short: ready at $root"
 done
+
+echo
+echo "Now build the corpora (neither is committed):"
+echo "    ./derive.sh          # the blind-comparison corpus"
+echo "    ./derive_bitrow.sh   # the machine-readable-strip corpus"
