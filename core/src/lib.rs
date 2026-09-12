@@ -6,6 +6,7 @@ pub mod edit_page;
 pub mod fingerprint;
 pub mod frame;
 pub mod html;
+pub mod imagediff;
 pub mod normalize;
 pub mod overlay;
 pub mod qr;

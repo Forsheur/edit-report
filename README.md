@@ -66,8 +66,10 @@ video to compare (.mp4)  ─┘
    sound, then per-frame perceptual hashing and a gap-tolerant sequence
    alignment. Produces a correspondence table; cuts fall out of its
    discontinuities. *(Milestone 2)*
-5. **Compare the picture** on aligned segments, and classify each difference
-   into one of the three states. *(Milestone 3)*
+5. **Compare the picture** on frames that already correspond, tile by tile,
+   and classify each difference into one of the three states. Regions are
+   grouped over time, because a retouch holds still and a codec's blocking
+   does not. *(Milestone 3)*
 
 ### Current state
 
@@ -75,12 +77,41 @@ video to compare (.mp4)  ─┘
 |---|---|---|
 | 1 | Bundle ingestion, chain state, burn-in reading, report | **done** |
 | 2 | Normalisation, temporal alignment, correspondence, cuts | **done** |
-| 3 | Image difference and its three-state classification | not started |
+| 3 | Image difference and its three-state classification | **done** |
 
 A report contains every section at every milestone. Sections a build does not
 fill carry an explicit `not_performed` state and the reason, so a section that
 was not run cannot be mistaken for one that ran and found nothing. The schema
 does not change shape when later milestones fill them in.
+
+### How the picture comparison works, and its one dial
+
+Each frame is reduced to a grid of per-tile statistics — mean, spread, and
+horizontal and vertical texture, a byte each. A tile **stands out** when its
+difference from the original's same tile exceeds **that frame's own** median by
+more than `--sensitivity` median-absolute-deviations. Nothing is compared
+against a fixed number of grey levels anywhere: a heavily recompressed frame
+raises its own bar, so there is no published constant for a forger to tune
+against.
+
+Contiguous standing-out tiles become a region, and regions that overlap across
+consecutive frames become a **track**. That grouping is what separates a
+retouch from an encoder: measured on real material at 720×1280, a 200×200 patch
+pasted over four seconds peaks at 79 deviations and holds one place for 36
+frames, while the same recording merely recompressed to 150 kbit/s peaks at
+11.4 in short bursts that move around. Single-frame regions are still listed —
+nothing is hidden — but listed as single-frame regions, next to the persistent
+ones, so the two cannot be read as the same finding.
+
+The default sensitivity of 12 comes from those two measurements and nothing
+else. It is a dial (`--sensitivity`, and a slider in the browser) precisely
+because two measurements cannot be right for every camera, codec and bit rate.
+`imagediff::Measure` names the statistic; adding a variant to it is the
+intended way to change what is measured, and it touches nothing else.
+
+The top tenth of the frame is left out: that is the burn-in band, whose content
+is checked elsewhere and by checksum, and whose hard black-on-white edges are
+the noisiest thing in the picture under recompression.
 
 ### How the alignment works
 

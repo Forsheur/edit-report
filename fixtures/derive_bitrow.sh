@@ -110,6 +110,22 @@ else
   echo "  (skipping cases 3 and 5 — $OTHER_SHORT is not fetched and extracted)"
 fi
 
+# ── 6 · A retouched region, and 7 · a single substituted frame ────────────
+# The two cases the frame-number path cannot see at all: nothing is cut, moved
+# or inserted, the counters run on perfectly, and the difference is in the
+# pixels. This is what the localised comparison exists for.
+ff -i "$SRC" -vf "drawbox=x=120:y=700:w=200:h=200:color=black:t=fill:enable='between(t,6,10)'" \
+   -c:v libx264 -b:v 3000k -an "$OUT/case6-retouched.mp4"
+say "case6-retouched.mp4" "200×200 patch, 6 s → 10 s"
+note "case6-retouched.mp4" "1 shot, 0 cuts; a located region around (17%, 55%) for ~4 s"
+
+# One frame replaced by a blurred copy of itself: everything around it is
+# identical, so the tool has exactly one frame in which to notice.
+ff -i "$SRC" -vf "gblur=sigma=8:enable='between(n,300,300)'" \
+   -c:v libx264 -b:v 3000k -an "$OUT/case7-one-frame.mp4"
+say "case7-one-frame.mp4" "frame 300 blurred"
+note "case7-one-frame.mp4" "1 shot, 0 cuts; one frame differing or located, the rest clean"
+
 # ── The degradation ladder ────────────────────────────────────────────────
 # None of these is an edit. Every one must come back as one shot, no cut, and
 # nothing in the "differs" list — refusals belong in the inconclusive list.

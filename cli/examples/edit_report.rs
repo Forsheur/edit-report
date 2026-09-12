@@ -286,6 +286,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 copy_label: &name(&args.copy),
                 frames_read: copy.len(),
                 seconds_examined: seconds,
+                located: &[],
+                diff: Default::default(),
+                located_ran: false,
             },
         );
         std::fs::write(&out, page)?;

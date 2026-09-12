@@ -15,6 +15,7 @@
 use crate::declared::{
     DeclaredCorrespondence, DeclaredSegment, FrameNote, JoinKind, NoteReason,
 };
+use crate::imagediff::{self, DiffSettings, DifferenceState, Located};
 
 fn esc(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -86,6 +87,15 @@ pub struct PageInputs<'a> {
     /// every statement below.
     pub frames_read: usize,
     pub seconds_examined: f64,
+    /// Frames whose picture was compared region by region. Empty when that
+    /// pass was not run, and the report then says so rather than implying
+    /// nothing was found.
+    pub located: &'a [Located],
+    /// The settings that comparison ran with, printed so a reader knows what
+    /// dial position produced what they are looking at.
+    pub diff: DiffSettings,
+    /// Whether the localised comparison ran at all.
+    pub located_ran: bool,
 }
 
 /// The whole thing as a standalone document, for the native binary.
@@ -310,7 +320,7 @@ pub fn fragment(r: &DeclaredCorrespondence, inputs: &PageInputs) -> String {
     let total_differing: usize = r.segments.iter().map(|s| s.differing.len()).sum();
     if total_differing == 0 {
         h.push_str(
-            "<p>None, among the frames that could be judged. See section 6 for the frames \
+            "<p>None, among the frames that could be judged. See section 7 for the frames \
              that could not.</p>\n",
         );
     } else {
@@ -327,9 +337,17 @@ pub fn fragment(r: &DeclaredCorrespondence, inputs: &PageInputs) -> String {
     }
     h.push_str("</section>\n");
 
+    // ── Where inside a frame the picture differs ─────────────────────────
+    h.push_str(
+        "<section><h2>6 · Where the picture differs inside frames that otherwise \
+         correspond</h2>\n",
+    );
+    h.push_str(&located_section(inputs));
+    h.push_str("</section>\n");
+
     // ── Inconclusive ─────────────────────────────────────────────────────
     let total_inconclusive: usize = r.segments.iter().map(|s| s.inconclusive.len()).sum();
-    h.push_str("<section><h2>6 · Frames nothing could be established about</h2>\n");
+    h.push_str("<section><h2>7 · Frames nothing could be established about</h2>\n");
     h.push_str(&format!(
         "<p>{} frame(s). These are not evidence of anything, in either direction. \
          A frame is here because its strip could not be read — too compressed, too \
@@ -382,6 +400,130 @@ fn shot_map(r: &DeclaredCorrespondence) -> String {
         ));
     }
     out.push_str("]</script>\n");
+    out
+}
+
+/// Section 6: the three states of the picture comparison, and where.
+///
+/// Counted, then listed. The counts matter as much as the list: a run where
+/// almost everything came back "consistent with recompression" and two frames
+/// came back located reads very differently from one where half the frames
+/// were inconclusive, and a reader who only sees the located ones cannot tell
+/// those apart.
+fn located_section(inputs: &PageInputs) -> String {
+    if !inputs.located_ran {
+        return "<p>Not performed in this run.</p>\n".to_string();
+    }
+    if inputs.located.is_empty() {
+        return "<p>No frame was eligible: this comparison runs only over frames whose \
+                picture already corresponds, and there were none.</p>\n"
+            .to_string();
+    }
+
+    let mut consistent = 0usize;
+    let mut inconclusive = 0usize;
+    let mut located: Vec<&Located> = Vec::new();
+    for l in inputs.located {
+        match l.difference.state {
+            DifferenceState::ConsistentWithRecompression => consistent += 1,
+            DifferenceState::Inconclusive => inconclusive += 1,
+            DifferenceState::LocalizedDifference => located.push(l),
+        }
+    }
+
+    let mut out = format!(
+        "<p>{} frame(s) compared region by region, on a {}×{} grid at sensitivity {:.1}. \
+         <strong>{}</strong> differ evenly across the frame, the way a recompression does. \
+         <strong>{}</strong> could not be judged. <strong>{}</strong> carry a difference \
+         confined to one part of the picture.</p>\n",
+        inputs.located.len(),
+        inputs.diff.cols,
+        inputs.diff.rows,
+        inputs.diff.sensitivity,
+        consistent,
+        inconclusive,
+        located.len(),
+    );
+
+    if located.is_empty() {
+        out.push_str(
+            "<p>Nothing is located, and that is a statement about the measurement, not a \
+             clearance: a change smaller than a tile, or one that moves the whole frame \
+             evenly, would not appear here.</p>\n",
+        );
+    } else {
+        // Grouped over time, because a per-frame count cannot tell a patch
+        // from encoder blocking and the two look identical in one frame.
+        let all = imagediff::tracks(inputs.located, 1);
+        let (held, blips): (Vec<_>, Vec<_>) = all.iter().partition(|t| t.frames > 1);
+
+        if !held.is_empty() {
+            out.push_str(
+                "<p><strong>Regions that stay in one place.</strong> A retouch sits still \
+                 for as long as it is there; a codec's blocking moves every frame. \
+                 Coordinates are fractions of the frame, so they hold whatever size the \
+                 file was rescaled to. Click and look.</p>\n<ul class=\"frames\">\n",
+            );
+            for t in held.iter().take(100) {
+                out.push_str(&format!(
+                    "<li>{} → {} · frames {}–{} · {} frame(s), {} · \
+                     {:.0}% × {:.0}% of the picture at ({:.0}%, {:.0}%) · peak {:.1} \
+                     deviations</li>\n",
+                    at(t.first_copy_t_us, None, &clock(t.first_copy_t_us)),
+                    at(t.last_copy_t_us, None, &clock(t.last_copy_t_us)),
+                    t.first_counter,
+                    t.last_counter,
+                    t.frames,
+                    esc(&duration(t.duration_us())),
+                    t.region.width * 100.0,
+                    t.region.height * 100.0,
+                    t.region.x * 100.0,
+                    t.region.y * 100.0,
+                    t.region.deviations,
+                ));
+            }
+            out.push_str("</ul>\n");
+        }
+
+        if !blips.is_empty() {
+            out.push_str(&format!(
+                "<p><strong>{} region(s) seen in a single frame and nowhere else.</strong> \
+                 Listed because nothing here is hidden, and separated because this is what \
+                 a starved encoder produces: at a low bit rate some blocks are given far \
+                 fewer bits than their neighbours, and they stand out against the frame's \
+                 own noise exactly the way an edit does. A single one of these is not \
+                 evidence of anything on its own.</p>\n<ul class=\"frames dim\">\n",
+                blips.len()
+            ));
+            for t in blips.iter().take(60) {
+                out.push_str(&format!(
+                    "<li>{} · frame {} · {:.0}% × {:.0}% at ({:.0}%, {:.0}%) · {:.1} \
+                     deviations</li>\n",
+                    at(t.first_copy_t_us, None, &clock(t.first_copy_t_us)),
+                    t.first_counter,
+                    t.region.width * 100.0,
+                    t.region.height * 100.0,
+                    t.region.x * 100.0,
+                    t.region.y * 100.0,
+                    t.region.deviations,
+                ));
+            }
+            out.push_str("</ul>\n");
+            if blips.len() > 60 {
+                out.push_str("<p class=\"note\">Only the first 60 are listed.</p>\n");
+            }
+        }
+    }
+
+    out.push_str(&format!(
+        "<p class=\"note\">Nothing here is compared against a fixed number of grey levels. \
+         Each frame is judged against its own spread, so a heavily recompressed frame raises \
+         its own bar and there is no published constant for anyone to tune against. The top \
+         {:.0}% of the frame is left out: that is the burn-in band, whose content is checked \
+         elsewhere and by checksum, and whose hard edges are the noisiest thing in the picture \
+         under recompression.</p>\n",
+        inputs.diff.skip_top_fraction * 100.0
+    ));
     out
 }
 
@@ -499,7 +641,7 @@ fn limits(r: &DeclaredCorrespondence, inputs: &PageInputs) -> String {
         0.0
     };
     format!(
-        "<section><h2>7 · What this report cannot say</h2>\n<ul class=\"limits\">\n\
+        "<section><h2>8 · What this report cannot say</h2>\n<ul class=\"limits\">\n\
          <li>{} frames were read, {:.1} per second of the supplied file. Nothing is claimed \
          about a moment that was not read.</li>\n\
          <li>The picture comparison uses a 63-bit fingerprint of each frame's coarse \
@@ -747,6 +889,9 @@ mod tests {
             copy_label: "supplied",
             frames_read: 233,
             seconds_examined: 7.73,
+            located: &[],
+            diff: DiffSettings::default(),
+            located_ran: false,
         }
     }
 
@@ -903,6 +1048,72 @@ mod tests {
         let h = render(&base(), &inputs());
         assert!(h.contains("return null;"), "toOriginal must refuse");
         assert!(h.contains("held still"));
+    }
+
+    #[test]
+    fn a_located_region_is_a_control_that_drives_both_players() {
+        use crate::imagediff::{FrameDifference, Region};
+        let located = vec![Located {
+            copy_index: 342,
+            copy_t_us: 11_400_000,
+            original_t_us: 17_700_000,
+            counter: 531,
+            difference: FrameDifference {
+                state: DifferenceState::LocalizedDifference,
+                regions: vec![Region {
+                    x: 0.25,
+                    y: 0.5,
+                    width: 0.25,
+                    height: 0.25,
+                    tiles: 16,
+                    deviations: 9.4,
+                }],
+                baseline: 12.0,
+                spread: 3.0,
+                inconclusive_because: None,
+            },
+        }];
+        let mut i = inputs();
+        i.located = &located;
+        i.located_ran = true;
+        let h = render(&base(), &i);
+        // One frame, so it is reported as a single-frame region and said to be
+        // one — not merged into the persistent list where it would read as a
+        // finding it is not.
+        assert!(h.contains("25% × 25% at (25%, 50%)"), "{h}");
+        assert!(h.contains(r#"data-copy="11.400""#));
+        assert!(h.contains("9.4 deviations"));
+        assert!(h.contains("seen in a single frame and nowhere else"));
+    }
+
+    #[test]
+    fn nothing_located_is_not_a_clearance() {
+        use crate::imagediff::FrameDifference;
+        let located = vec![Located {
+            copy_index: 1,
+            copy_t_us: 0,
+            original_t_us: 0,
+            counter: 1,
+            difference: FrameDifference {
+                state: DifferenceState::ConsistentWithRecompression,
+                regions: vec![],
+                baseline: 8.0,
+                spread: 2.0,
+                inconclusive_because: None,
+            },
+        }];
+        let mut i = inputs();
+        i.located = &located;
+        i.located_ran = true;
+        let h = render(&base(), &i);
+        assert!(h.contains("not a clearance"), "{h}");
+        assert!(h.contains("smaller than a tile"));
+    }
+
+    #[test]
+    fn a_run_without_the_localized_pass_says_so_rather_than_implying_nothing() {
+        let h = render(&base(), &inputs());
+        assert!(h.contains("Not performed in this run"));
     }
 
     #[test]

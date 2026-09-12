@@ -106,11 +106,15 @@ async function scan(which, buffer, track, onProgress) {
 /// the bundle's own `verify_bundle.py`, and there is no Python in a browser.
 /// Saying so is the honest thing; re-implementing it in JavaScript would be a
 /// second implementation of the one thing that must have exactly one.
-export async function compare({ originalFile, copyFile, shortId, chainVerdict, chainPassed, onProgress }) {
+export async function compare({ originalFile, copyFile, shortId, chainVerdict, chainPassed,
+                                sensitivity, grid, onProgress }) {
   const originalBuffer = await originalFile.arrayBuffer();
   const originalTrack = demux(originalBuffer);
 
   wasm.er_reset(originalTrack.width, originalTrack.height);
+  // Before the first frame: the grids are built as frames arrive, so changing
+  // the geometry afterwards would compare two different griddings.
+  wasm.er_set_diff(sensitivity || 0, grid || 0);
   setText(0, shortId || '');
   setText(1, chainVerdict || 'not established here — this page does not run the bundle\u2019s verifier');
   setText(2, originalFile.name);
@@ -135,5 +139,6 @@ export async function compare({ originalFile, copyFile, shortId, chainVerdict, c
     originalFrames: o.frames,
     copyFrames: c.frames,
     originalDeclaring: wasm.er_original_declaring(),
+    located: wasm.er_located_count(),
   };
 }

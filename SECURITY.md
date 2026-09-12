@@ -91,9 +91,16 @@ attack would have to guess, and half its guesses would be accusations.
 
 **Or change one frame.** A single substituted frame in an otherwise identical
 copy is the sharpest version of this attack. It is a fixture in the test set,
-and at milestone 2 it shows up as exactly one frame of 258 failing to match —
-which is a hole in the correspondence, not yet a statement about the picture.
-Milestone 3 is what classifies it.
+and it shows up as exactly one frame failing to match. Measured on a real
+recording with one frame blurred: the report puts that frame in **inconclusive**
+— 22 of 63 bits apart, too far to confirm and not far enough to call a
+different picture — names its timestamp, and the two players let a reader look
+at it beside the original. That is the honest outcome for a single frame, and
+it is a pointer rather than a verdict.
+
+Milestone 3 will not always add to it. A change that moves the whole frame
+evenly — a blur, a grade, a re-render — is by construction not localised, and
+the localised pass says so rather than inventing a rectangle.
 
 ### Film something that looks the same for a long time
 

@@ -12,6 +12,7 @@ use crate::decode::{self, DecodeError};
 use edit_report_core::bitrow;
 use edit_report_core::declared::{self, Declared, DeclaredCorrespondence, OriginalFrame, Tuning};
 use edit_report_core::fingerprint::{fingerprint, Fingerprint};
+use edit_report_core::imagediff::{self, DiffSettings, Located, TileGrid};
 use edit_report_core::report::MediaProfile;
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -20,6 +21,11 @@ use std::time::{Duration, Instant};
 struct Row {
     reading: Option<bitrow::RowReading>,
     fp: Fingerprint,
+    /// Where this frame's picture differs, tile by tile. A kilobyte a frame at
+    /// the default grid — the only thing besides the fingerprint that survives
+    /// a pass, and the reason the localised comparison needs no second read of
+    /// either file.
+    grid: TileGrid,
     t_us: i64,
     index: u64,
 }
@@ -27,6 +33,11 @@ struct Row {
 /// What a pass over both files established, plus what it cost.
 pub struct Pass {
     pub correspondence: DeclaredCorrespondence,
+    /// Frames whose picture was compared region by region, with the outcome.
+    /// Only frames the fingerprint CONFIRMED are here: asking where two
+    /// different pictures differ is not a question with an answer.
+    pub located: Vec<Located>,
+    pub diff_settings: DiffSettings,
     /// Frames read on each side.
     pub original_frames: usize,
     pub copy_frames: usize,
@@ -46,12 +57,18 @@ impl Pass {
     }
 }
 
-fn scan(path: &Path, profile: &MediaProfile, scale: f32) -> Result<Vec<Row>, DecodeError> {
+fn scan(
+    path: &Path,
+    profile: &MediaProfile,
+    scale: f32,
+    diff: &DiffSettings,
+) -> Result<Vec<Row>, DecodeError> {
     let mut rows = Vec::with_capacity(profile.frame_count.max(0) as usize);
     decode::decode_stream(path, profile, 1, |frame| {
         rows.push(Row {
             reading: bitrow::read(&frame, scale).ok(),
             fp: fingerprint(&frame),
+            grid: imagediff::tile_stats(&frame, diff),
             t_us: frame.pts_us,
             index: frame.index,
         });
@@ -70,6 +87,7 @@ pub fn run(
     original: &Path,
     copy: &Path,
     short_id: &str,
+    diff: DiffSettings,
 ) -> Result<Pass, Box<dyn std::error::Error>> {
     let started = Instant::now();
     let op = decode::probe(original, None)?;
@@ -84,8 +102,8 @@ pub fn run(
         1.0
     };
 
-    let orows = scan(original, &op, 1.0)?;
-    let crows = scan(copy, &cp, scale)?;
+    let orows = scan(original, &op, 1.0, &diff)?;
+    let crows = scan(copy, &cp, scale, &diff)?;
 
     let originals: Vec<OriginalFrame> = orows
         .iter()
@@ -122,8 +140,34 @@ pub fn run(
         ..Tuning::every_frame(fps)
     };
 
+    let correspondence = declared::build_with(&copies, &originals, tuning);
+
+    // ── Where the pictures differ ─────────────────────────────────────────
+    let ogrids: Vec<imagediff::OriginalGrid> = orows
+        .iter()
+        .filter_map(|r| {
+            r.reading.map(|k| imagediff::OriginalGrid {
+                counter: k.counter,
+                t_us: r.t_us,
+                grid: r.grid.clone(),
+            })
+        })
+        .collect();
+    let cgrids: Vec<imagediff::CopyGrid> = crows
+        .iter()
+        .map(|r| imagediff::CopyGrid {
+            index: r.index,
+            t_us: r.t_us,
+            counter: r.reading.map(|k| k.counter),
+            grid: r.grid.clone(),
+        })
+        .collect();
+    let located = imagediff::locate(&correspondence, &ogrids, &cgrids, &diff);
+
     Ok(Pass {
-        correspondence: declared::build_with(&copies, &originals, tuning),
+        correspondence,
+        located,
+        diff_settings: diff,
         original_frames: orows.len(),
         copy_frames: crows.len(),
         original_declaring: originals.len(),

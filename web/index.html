@@ -21,6 +21,8 @@
   #progress { font-size:13px; color:var(--dim); margin-left:10px; font-variant-numeric:tabular-nums; }
   #trouble { color:var(--bad); white-space:pre-wrap; }
   .caveat { font-size:13px; color:var(--dim); max-width:72ch; }
+  .dim { color:var(--dim); font-size:13px; }
+  output { font-variant-numeric:tabular-nums; min-width:2.5em; display:inline-block; }
 </style>
 </head>
 <body>
@@ -52,6 +54,27 @@
   <legend>2 · the file to examine</legend>
   <label class="row"><span>Supplied video</span>
     <input type="file" id="copy" accept="video/*"></label>
+</fieldset>
+
+<fieldset>
+  <legend>3 · how hard to look inside the picture</legend>
+  <label class="row"><span>Sensitivity</span>
+    <input type="range" id="sensitivity" min="3" max="30" step="0.5" value="12">
+    <output id="sensOut">12</output>
+    <span class="dim"> deviations</span></label>
+  <label class="row"><span>Grid</span>
+    <input type="range" id="grid" min="8" max="32" step="4" value="16">
+    <output id="gridOut">16</output>
+    <span class="dim"> × tiles</span></label>
+  <p class="caveat">
+    A region is located when it stands out from <em>that frame's own</em>
+    spread by more than this many median-absolute-deviations. There is no
+    threshold in grey levels anywhere in this tool: a heavily recompressed
+    frame raises its own bar, so there is no published constant to tune
+    against. Measured on real material at 720×1280, a 200×200 patch pasted
+    over four seconds peaks around 79; the same recording merely recompressed
+    to 150 kbit/s peaks around 11. Lower finds more and cries wolf more.
+  </p>
 </fieldset>
 
 <p>
@@ -98,6 +121,9 @@ function refresh() {
 }
 $('original').addEventListener('change', refresh);
 $('copy').addEventListener('change', refresh);
+for (const [range, out] of [['sensitivity', 'sensOut'], ['grid', 'gridOut']]) {
+  $(range).addEventListener('input', () => { $(out).value = $(range).value; });
+}
 
 $('go').addEventListener('click', async () => {
   $('go').disabled = true;
@@ -112,13 +138,16 @@ $('go').addEventListener('click', async () => {
       originalFile: $('original').files[0],
       copyFile: $('copy').files[0],
       shortId: $('shortId').value.trim(),
+      sensitivity: parseFloat($('sensitivity').value),
+      grid: parseInt($('grid').value, 10),
       onProgress: (which, done, total) => {
         $('progress').textContent = `${which}: ${done} / ${total} frames`;
       },
     });
     const secs = ((performance.now() - t0) / 1000).toFixed(1);
     $('progress').textContent =
-      `${r.originalFrames} + ${r.copyFrames} frames in ${secs}s`;
+      `${r.originalFrames} + ${r.copyFrames} frames in ${secs}s`
+      + (r.located ? ` · ${r.located} frame(s) with a located region` : '');
 
     $('report').innerHTML = r.html;
     // A script arriving through innerHTML never runs, so the behaviour is

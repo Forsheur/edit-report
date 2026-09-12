@@ -29,6 +29,7 @@ use edit_report_core::declared::{self, Declared, OriginalFrame, Tuning};
 use edit_report_core::edit_page::{self, PageInputs};
 use edit_report_core::fingerprint::fingerprint;
 use edit_report_core::frame::LumaFrame;
+use edit_report_core::imagediff::{self, DiffSettings, Located, TileGrid};
 use std::cell::RefCell;
 
 #[derive(Default)]
@@ -42,6 +43,13 @@ struct Session {
     copy_scale: f32,
     originals: Vec<OriginalFrame>,
     copies: Vec<Declared>,
+    /// Per-frame tile grids, so the localised comparison needs no second pass
+    /// over either file. Keyed by the counter for the original, by position
+    /// for the copy.
+    original_grids: std::collections::HashMap<u64, TileGrid>,
+    copy_grids: Vec<(u64, i64, Option<u64>, TileGrid)>,
+    diff: DiffSettings,
+    located: Vec<Located>,
     copy_frames: usize,
     copy_duration_us: i64,
     short_id: String,
@@ -96,11 +104,14 @@ unsafe fn borrow_str<'a>(ptr: *const u8, len: usize) -> &'a str {
 pub extern "C" fn er_reset(width: u32, height: u32) {
     S.with(|s| {
         let mut s = s.borrow_mut();
+        let diff = s.diff;
         *s = Session {
             width,
             height,
             copy_scale: 1.0,
             chain_passed: true,
+            // Kept across a reset: it is a user setting, not session state.
+            diff,
             ..Session::default()
         };
     });
@@ -121,6 +132,22 @@ pub unsafe extern "C" fn er_set_text(field: u32, ptr: *const u8, len: usize) {
             4 => s.original_src = v,
             5 => s.copy_src = v,
             _ => {}
+        }
+    });
+}
+
+/// The localised comparison's dials, straight from the interface.
+/// `sensitivity` is in median-absolute-deviations; `grid` is tiles per side.
+#[no_mangle]
+pub extern "C" fn er_set_diff(sensitivity: f32, grid: u32) {
+    S.with(|s| {
+        let mut s = s.borrow_mut();
+        if sensitivity.is_finite() && sensitivity > 0.0 {
+            s.diff.sensitivity = sensitivity;
+        }
+        if (2..=64).contains(&grid) {
+            s.diff.cols = grid;
+            s.diff.rows = grid;
         }
     });
 }
@@ -156,6 +183,7 @@ pub unsafe extern "C" fn er_push_original(
     let fp = fingerprint(&frame);
     S.with(|s| {
         let mut s = s.borrow_mut();
+        let grid = imagediff::tile_stats(&frame, &s.diff);
         if let Some(k) = reading {
             s.originals.push(OriginalFrame {
                 counter: k.counter,
@@ -163,6 +191,7 @@ pub unsafe extern "C" fn er_push_original(
                 t_us: t_us as i64,
                 fp,
             });
+            s.original_grids.insert(k.counter, grid);
         }
     });
     reading.is_some() as u32
@@ -197,6 +226,7 @@ pub unsafe extern "C" fn er_push_copy(
     let fp = fingerprint(&frame);
     S.with(|s| {
         let mut s = s.borrow_mut();
+        let grid = imagediff::tile_stats(&frame, &s.diff);
         s.copy_scale = scale;
         s.copy_frames += 1;
         s.copies.push(Declared {
@@ -206,6 +236,8 @@ pub unsafe extern "C" fn er_push_copy(
             tag: reading.map(|k| k.session_tag),
             fp,
         });
+        s.copy_grids
+            .push((index as u64, t_us as i64, reading.map(|k| k.counter), grid));
     });
     reading.is_some() as u32
 }
@@ -237,6 +269,31 @@ pub extern "C" fn er_finish(fps: f64) -> usize {
             ..Tuning::every_frame(if fps > 0.0 { fps } else { 30.0 })
         };
         let r = declared::build_with(&s.copies, &s.originals, tuning);
+
+        // The same selection rule the native binary uses, from the core.
+        let ogrids: Vec<imagediff::OriginalGrid> = s
+            .originals
+            .iter()
+            .filter_map(|o| {
+                s.original_grids.get(&o.counter).map(|g| imagediff::OriginalGrid {
+                    counter: o.counter,
+                    t_us: o.t_us,
+                    grid: g.clone(),
+                })
+            })
+            .collect();
+        let cgrids: Vec<imagediff::CopyGrid> = s
+            .copy_grids
+            .iter()
+            .map(|(index, t_us, counter, grid)| imagediff::CopyGrid {
+                index: *index,
+                t_us: *t_us,
+                counter: *counter,
+                grid: grid.clone(),
+            })
+            .collect();
+        s.located = imagediff::locate(&r, &ogrids, &cgrids, &s.diff);
+
         let seconds = (s.copy_duration_us.max(0) as f64) / 1e6;
         let html = edit_page::fragment(
             &r,
@@ -250,6 +307,9 @@ pub extern "C" fn er_finish(fps: f64) -> usize {
                 copy_label: &s.copy_label,
                 frames_read: s.copy_frames,
                 seconds_examined: seconds,
+                located: &s.located,
+                diff: s.diff,
+                located_ran: true,
             },
         );
         s.out = html;
@@ -265,6 +325,19 @@ pub extern "C" fn er_out_ptr() -> *const u8 {
 /// Frames of the original whose strip could be read. Zero means the original
 /// predates the strip and the declaration path has nothing to work with —
 /// worth saying out loud rather than showing an empty report.
+/// Frames whose picture came back with a difference confined to one part of
+/// it, so the page can say something before the reader scrolls.
+#[no_mangle]
+pub extern "C" fn er_located_count() -> usize {
+    S.with(|s| {
+        s.borrow()
+            .located
+            .iter()
+            .filter(|l| l.difference.state == imagediff::DifferenceState::LocalizedDifference)
+            .count()
+    })
+}
+
 #[no_mangle]
 pub extern "C" fn er_original_declaring() -> usize {
     S.with(|s| s.borrow().originals.len())

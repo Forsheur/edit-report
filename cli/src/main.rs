@@ -58,6 +58,15 @@ OPTIONS:
                            for alignment (default 4). Both sides must be sampled
                            at the same rate in time; finer costs proportionally
                            more and buys accuracy on fast pans.
+    --sensitivity <N>      How far above a frame's OWN noise a region must sit
+                           before the report locates a difference in it, in
+                           median-absolute-deviations (default 6). Lower finds
+                           more and cries wolf more. There is no threshold in
+                           grey levels here and there never will be: each frame
+                           is judged against its own distribution, so a
+                           recompressed one raises its own bar.
+    --diff-grid <N>        Tiles across the frame for that comparison
+                           (default 16, so 16×16).
     --python <PATH>        Interpreter used to run the bundle's verify_bundle.py.
     --skip-crypto          Do not run the bundle's verifier. The report then
                            states that the chain was not established here.
@@ -86,6 +95,7 @@ struct Args {
     samples_per_second: f64,
     python: Option<String>,
     skip_crypto: bool,
+    diff: edit_report_core::imagediff::DiffSettings,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -101,6 +111,7 @@ fn parse_args() -> Result<Args, String> {
     let mut samples_per_second = decode::SAMPLES_PER_SECOND;
     let mut python = None;
     let mut skip_crypto = false;
+    let mut diff = edit_report_core::imagediff::DiffSettings::default();
 
     let mut it = std::env::args_os().skip(1);
     while let Some(a) = it.next() {
@@ -147,6 +158,26 @@ fn parse_args() -> Result<Args, String> {
                     return Err("--samples-per-second must be a positive number".into());
                 }
             }
+            "--sensitivity" => {
+                let v = it.next().ok_or("--sensitivity needs a value")?;
+                diff.sensitivity = v.to_string_lossy().parse().map_err(|_| {
+                    format!("--sensitivity wants a number, got {:?}", v.to_string_lossy())
+                })?;
+                if !(diff.sensitivity.is_finite() && diff.sensitivity > 0.0) {
+                    return Err("--sensitivity must be a positive number".into());
+                }
+            }
+            "--diff-grid" => {
+                let v = it.next().ok_or("--diff-grid needs a value")?;
+                let n: u32 = v.to_string_lossy().parse().map_err(|_| {
+                    format!("--diff-grid wants a number, got {:?}", v.to_string_lossy())
+                })?;
+                if !(2..=64).contains(&n) {
+                    return Err("--diff-grid must be between 2 and 64".into());
+                }
+                diff.cols = n;
+                diff.rows = n;
+            }
             "--skip-crypto" => skip_crypto = true,
             other => return Err(format!("unknown option {other:?}")),
         }
@@ -162,6 +193,7 @@ fn parse_args() -> Result<Args, String> {
         samples_per_second,
         python,
         skip_crypto,
+        diff,
     })
 }
 
@@ -381,8 +413,9 @@ fn run(args: &Args) -> Result<ExitCode, Box<dyn std::error::Error>> {
         correspondence,
         cuts: cuts_section,
         image_differences: Section::not_performed(
-            "this build maps segments and locates cuts; it does not yet classify differences \
-             inside the picture",
+            "this section belongs to the blind path, which maps segments and locates cuts \
+             only. The picture comparison runs on the declaration path and is written to \
+             --html, where it has its own section",
         ),
         limits,
     };
@@ -411,6 +444,7 @@ fn run(args: &Args) -> Result<ExitCode, Box<dyn std::error::Error>> {
                     copy_path,
                     manifest.session.short_id.as_deref().unwrap_or(""),
                     &chain_headline,
+                    args.diff,
                     p,
                 )?;
                 eprintln!(
@@ -453,16 +487,28 @@ fn edit_pass(
     copy: &Path,
     short_id: &str,
     chain_headline: &str,
+    diff: edit_report_core::imagediff::DiffSettings,
     out: &Path,
 ) -> Result<(usize, usize), Box<dyn std::error::Error>> {
     eprintln!("Reading every frame of both files…");
-    let pass = editpass::run(original, copy, short_id)?;
+    let pass = editpass::run(original, copy, short_id, diff)?;
     eprintln!(
         "  original {} frame(s), copy {} frame(s), {:.1}s",
         pass.original_frames,
         pass.copy_frames,
         pass.elapsed.as_secs_f64()
     );
+    {
+        use edit_report_core::imagediff::DifferenceState as D;
+        let count = |w: D| pass.located.iter().filter(|l| l.difference.state == w).count();
+        eprintln!(
+            "  picture compared on {} frame(s): {} even, {} located, {} inconclusive",
+            pass.located.len(),
+            count(D::ConsistentWithRecompression),
+            count(D::LocalizedDifference),
+            count(D::Inconclusive),
+        );
+    }
     if !pass.original_is_readable() {
         eprintln!(
             "  no machine-readable strip on any frame of the original — this recording \
@@ -482,6 +528,9 @@ fn edit_pass(
             copy_label: &file_name_of(copy).unwrap_or_default(),
             frames_read: pass.copy_frames,
             seconds_examined: (pass.copy_duration_us.max(0) as f64) / 1e6,
+            located: &pass.located,
+            diff: pass.diff_settings,
+            located_ran: true,
         },
     );
     std::fs::write(out, page)?;
