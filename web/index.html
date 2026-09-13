@@ -44,9 +44,15 @@
   <p class="caveat">
     Unpack the bundle and run its own verifier first — <code>python3
     verify_bundle.py . --extract</code> — then point this at
-    <code>extracted/back.mp4</code>. The short id is the tail of the QR URL;
-    with it, this page can check the two-byte signature burned into every
-    frame against the one this recording should carry.
+    <code>extracted/back.mp4</code>.
+  </p>
+  <p class="caveat">
+    <strong>The recording id is what makes the signature check possible.</strong>
+    It is the tail of the QR URL — <code>&hellip;/v/<b>lzvYrVDnmEMQ</b></code>.
+    Every frame carries a two-byte signature derived from it, so with the id a
+    frame from another recording is caught in one frame, before a single
+    picture is compared. Leave it empty and the report will read the
+    signatures but have nothing to compare them against, and it will say so.
   </p>
 </fieldset>
 

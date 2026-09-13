@@ -525,6 +525,7 @@ fn edit_pass(
             short_id,
             chain_verdict: chain_headline,
             chain_passed: true,
+            chain_checked: true,
             original_src: &editpass::relative(out, original),
             copy_src: &editpass::relative(out, copy),
             original_label: &file_name_of(original).unwrap_or_default(),

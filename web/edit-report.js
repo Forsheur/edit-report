@@ -126,7 +126,10 @@ export async function compare({ originalFile, copyFile, shortId, chainVerdict, c
   // the geometry afterwards would compare two different griddings.
   wasm.er_set_diff(sensitivity || 0, grid || 0);
   setText(0, shortId || '');
-  setText(1, chainVerdict || 'not established here — this page does not run the bundle\u2019s verifier');
+  // No default sentence: with `chain_checked` false the report explains in
+  // its own words what was not checked and what to run. A placeholder here
+  // was how "not established here" reached readers who could not act on it.
+  setText(1, chainVerdict || '');
   setText(2, originalFile.name);
   setText(3, copyFile.name);
   setText(4, URL.createObjectURL(originalFile));

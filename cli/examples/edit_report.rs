@@ -235,6 +235,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 short_id: &args.short_id,
                 chain_verdict: &args.chain_verdict,
                 chain_passed: args.chain_passed,
+                chain_checked: false,
                 original_src: &editpass::relative(&out, &args.original),
                 copy_src: &editpass::relative(&out, &args.copy),
                 original_label: &name(&args.original),

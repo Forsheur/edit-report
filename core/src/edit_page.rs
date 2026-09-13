@@ -71,7 +71,16 @@ pub struct PageInputs<'a> {
     /// Short id of the recording the bundle is for.
     pub short_id: &'a str,
     /// Verdict line from the bundle's own verifier, quoted, not re-derived.
+    /// Ignored when `chain_checked` is false.
     pub chain_verdict: &'a str,
+    /// Whether a verifier was run at all.
+    ///
+    /// The browser build never runs one — there is no Python in a browser and
+    /// this project does not re-implement the check — so it says so in its own
+    /// words rather than passing a sentence through. "not established here"
+    /// was that sentence, and it told a reader neither what had not been done
+    /// nor what to do about it.
+    pub chain_checked: bool,
     /// Whether that verifier passed. The comparison is only worth reading
     /// under a chain that holds, so the page says so before anything else.
     pub chain_passed: bool,
@@ -135,12 +144,25 @@ pub fn fragment(r: &DeclaredCorrespondence, inputs: &PageInputs) -> String {
 
     // ── The chain, first and separately ──────────────────────────────────
     h.push_str("<section><h2>1 · This recording</h2>\n");
-    h.push_str(&format!(
-        "<p class=\"{}\">{}</p>\n",
-        if inputs.chain_passed { "ok" } else { "bad" },
-        esc(inputs.chain_verdict)
-    ));
-    if !inputs.chain_passed {
+    if inputs.chain_checked {
+        h.push_str(&format!(
+            "<p class=\"{}\">{}</p>\n",
+            if inputs.chain_passed { "ok" } else { "bad" },
+            esc(inputs.chain_verdict)
+        ));
+    } else {
+        h.push_str(
+            "<p><strong>The cryptographic chain was not checked here.</strong> This page \
+             compares pictures and nothing else. What establishes where a recording came \
+             from and when — the device signature, the notary chain, the timestamp anchors \
+             — is checked by the verifier shipped inside the bundle, which this project \
+             deliberately never re-implements: one implementation of the thing that must be \
+             right, not two.</p>\n\
+             <p>Unpack the bundle and run it, then read its verdict beside this report:</p>\n\
+             <pre><code>python3 verify_bundle.py .</code></pre>\n",
+        );
+    }
+    if inputs.chain_checked && !inputs.chain_passed {
         h.push_str(
             "<p>The comparison below is not shown: there is no established original to \
              compare against.</p>\n</section>\n",
@@ -524,64 +546,86 @@ fn located_section(inputs: &PageInputs) -> String {
     out
 }
 
+/// The recording signature, said out loud in all three cases.
+///
+/// This is the cheapest decisive check in the tool: a frame carrying somebody
+/// else's two bytes settles a swapped recording without comparing a single
+/// picture. It used to be reported only by implication — a match and a
+/// no-match read almost the same, and a reader could not see that a check had
+/// happened at all. A check nobody notices succeeding is a check nobody will
+/// think about when it fails.
 fn signature_block(r: &DeclaredCorrespondence) -> String {
-    let mut out = String::new();
-    out.push_str("<p>");
+    let total: usize = r.tags_seen.iter().map(|(_, n)| *n).sum();
     match (r.tag_expected, r.tags_seen.as_slice()) {
-        (want, []) => {
-            if let Some(w) = want {
-                // Say which signature was expected even when none was found.
-                // A reader has to be able to check the claim, and "none read"
-                // without naming the target is half a sentence.
-                out.push_str(&format!(
-                    "This bundle's recording signature is <code>0x{w:04X}</code>. "
-                ));
-            }
-            out.push_str(
-                "No frame of the supplied file carries a readable recording signature. \
-                 Nothing follows from that on its own: the strip is destroyed by a heavy \
-                 recompression and removed by a crop.",
-            );
-        }
-        (Some(want), seen) => {
-            let mine = seen.iter().find(|(t, _)| *t == want).map(|(_, n)| *n);
-            let others: Vec<String> = seen
-                .iter()
-                .filter(|(t, _)| *t != want)
-                .map(|(t, n)| format!("0x{t:04X} on {n} frame(s)"))
-                .collect();
-            out.push_str(&format!(
-                "This bundle's recording signature is <code>0x{want:04X}</code>. \
-                 {} carry it",
-                match mine {
-                    Some(n) => format!("{n} frame(s)"),
-                    None => "No frames".to_string(),
-                }
-            ));
-            if others.is_empty() {
-                out.push('.');
-            } else {
-                out.push_str(&format!(
-                    ". Other signatures are present: {}. Those frames were burned by a \
-                     different recording — a signature is two bytes and can be drawn, but \
-                     a frame carrying somebody else's is not this recording's.",
-                    esc(&others.join(", "))
-                ));
-            }
+        // Nothing to compare against: no id was given.
+        (None, []) => {
+            "<p><strong>No recording signature was read, and none was expected.</strong> \
+             No recording id was given, so nothing was compared. The strip is destroyed by a \
+             heavy recompression and removed by a crop, so its absence on its own says \
+             nothing either way.</p>\n"
+                .to_string()
         }
         (None, seen) => {
             let list: Vec<String> = seen
                 .iter()
                 .map(|(t, n)| format!("0x{t:04X} on {n} frame(s)"))
                 .collect();
-            out.push_str(&format!(
-                "Signatures read in the supplied file: {}.",
+            format!(
+                "<p class=\"warn\"><strong>These signatures were read, and compared to \
+                 nothing:</strong> {}. No recording id was given, so this report cannot say \
+                 whether they are the right ones. Supply the id — the tail of the QR URL — \
+                 and this becomes a one-frame check.</p>\n",
                 esc(&list.join(", "))
-            ));
+            )
+        }
+        // An id was given and no strip could be read anywhere.
+        (Some(w), []) => format!(
+            "<p class=\"warn\"><strong>Expected signature 0x{w:04X}, and no signature could \
+             be read at all.</strong> Nothing follows from that on its own: the strip does \
+             not survive a heavy recompression and a crop removes it. It does mean this \
+             check established nothing, and the correspondence below rests entirely on the \
+             pictures.</p>\n"
+        ),
+        (Some(w), seen) => {
+            let mine = seen.iter().find(|(t, _)| *t == w).map_or(0, |(_, n)| *n);
+            let others: Vec<String> = seen
+                .iter()
+                .filter(|(t, _)| *t != w)
+                .map(|(t, n)| format!("0x{t:04X} on {n} frame(s)"))
+                .collect();
+            if others.is_empty() {
+                format!(
+                    "<p class=\"ok\"><strong>Signature 0x{w:04X}: carried by all {mine} frame(s) \
+                     that could be read, and no other signature appears.</strong> Every frame \
+                     whose strip survived says it belongs to this recording. It is two bytes and \
+                     anyone can draw them, so this does not prove the frames are genuine — but \
+                     a frame carrying somebody else's would have settled the opposite here, in \
+                     one frame.</p>\n"
+                )
+            } else if mine == 0 {
+                // Not a mixture — a different recording altogether. Saying
+                // "frames from more than one recording" here would be wrong,
+                // and this is the swapped-recording case, the one the check
+                // exists for.
+                format!(
+                    "<p class=\"bad\"><strong>This file is not the recording this bundle is \
+                     for.</strong> The bundle's signature is 0x{w:04X} and not one of the \
+                     {total} frame(s) that could be read carries it. They carry {} instead. \
+                     Everything below is measured against an original this file does not \
+                     claim to come from.</p>\n",
+                    esc(&others.join(", "))
+                )
+            } else {
+                format!(
+                    "<p class=\"bad\"><strong>This file mixes more than one recording.</strong> \
+                     The bundle's signature is 0x{w:04X}, carried by {mine} of the {total} \
+                     frame(s) that could be read. The rest carry {}, which is another \
+                     recording's.</p>\n",
+                    esc(&others.join(", "))
+                )
+            }
         }
     }
-    out.push_str("</p>\n");
-    out
 }
 
 fn shot_row(n: usize, s: &DeclaredSegment, confirm: u32) -> String {
@@ -678,14 +722,19 @@ fn limits(r: &DeclaredCorrespondence, inputs: &PageInputs) -> String {
 
 /// The report's stylesheet, `<style>` tags included.
 pub const STYLE: &str = r#"<style>
-:root { color-scheme: light dark; --line:#d8d8d8; --dim:#666; --bad:#8a1c1c; --ok:#14532d; }
-@media (prefers-color-scheme: dark) { :root { --line:#333; --dim:#9a9a9a; --bad:#ff9a9a; --ok:#9ae6b4; } }
+:root { color-scheme: light dark; --line:#d8d8d8; --dim:#666; --bad:#8a1c1c; --ok:#14532d; --warn:#7a4a00; }
+@media (prefers-color-scheme: dark) { :root { --line:#333; --dim:#9a9a9a; --bad:#ff9a9a; --ok:#9ae6b4; --warn:#f0c674; } }
 body { margin:0 auto; padding:24px 16px 64px; max-width:1100px;
        font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
 h1 { font-size:22px; margin:0 0 4px; }
 h2 { font-size:16px; margin:32px 0 8px; padding-bottom:4px; border-bottom:1px solid var(--line); }
 .lede { color:var(--dim); max-width:70ch; }
 .ok { color:var(--ok); } .bad { color:var(--bad); font-weight:600; }
+/* Amber, not red: "nothing was compared" is not "something is wrong", and
+   colouring the two the same would teach a reader to ignore both. */
+.warn { color:var(--warn); }
+pre { background:rgba(127,127,127,.12); padding:8px 10px; border-radius:4px;
+      overflow-x:auto; font-size:13px; }
 .note, .sub { color:var(--dim); font-size:13px; }
 .players { display:flex; gap:12px; flex-wrap:wrap; position:sticky; top:0;
            background:Canvas; padding:8px 0; z-index:5; border-bottom:1px solid var(--line); }
@@ -728,78 +777,105 @@ window.editReportLink = function () {
   var shots = [];
   try { shots = JSON.parse(document.getElementById('shots').textContent) || []; } catch (e) {}
 
-  // Where a moment of the supplied file sits in the original.
+  // Map a moment from one file to the other, through the shot it falls in.
   //
   // Inside a shot, by interpolation: the two run at the same rate there, and a
   // shot of a re-encoded copy is not always exactly as long as the original's,
   // so mapping the ends and interpolating between them beats adding a fixed
-  // offset. Outside every shot — inserted material, an unreadable passage —
-  // there is NO answer, and the honest thing is to say so rather than park the
-  // original at whatever is nearest.
-  function toOriginal(t) {
+  // offset — the offset is not constant, that is what a cut IS.
+  //
+  // Outside every shot there is NO answer: material inserted into the copy has
+  // no counterpart in the original, and material cut out of the copy has none
+  // the other way. Returning null rather than the nearest thing is the point;
+  // a player showing an unrelated frame beside a claim is worse than one that
+  // has stopped.
+  function map(t, from, to) {
     for (var i = 0; i < shots.length; i++) {
       var s = shots[i];
-      if (t >= s.c0 - 0.02 && t <= s.c1 + 0.02) {
-        var span = s.c1 - s.c0;
-        var f = span > 0.001 ? (t - s.c0) / span : 0;
-        return s.o0 + (s.o1 - s.o0) * f;
+      var a0 = s[from + '0'], a1 = s[from + '1'];
+      var b0 = s[to + '0'], b1 = s[to + '1'];
+      if (t >= a0 - 0.02 && t <= a1 + 0.02) {
+        var span = a1 - a0;
+        return b0 + (b1 - b0) * (span > 0.001 ? (t - a0) / span : 0);
       }
     }
     return null;
   }
 
+  // Both directions. Neither player is "the" driver: on screen they are two
+  // identical players, and nothing tells a reader which one commands. The
+  // first version made the supplied file drive and the original follow, which
+  // was the implementer's mental model leaking into the interface.
+  var HELD = 'no counterpart to this moment — the other player is held still';
   var applying = false;          // guard against the echo of our own seek
   function linked() { return link && link.checked; }
 
-  function setAdrift(yes, why) {
-    var fig = vo.closest('figure');
+  function setAdrift(el, yes) {
+    var fig = el && el.closest('figure');
     if (fig) fig.classList.toggle('adrift', !!yes);
-    if (state) state.textContent = yes ? why : '';
+    if (state) {
+      var any = document.querySelector('.players figure.adrift');
+      state.textContent = any ? HELD : '';
+    }
   }
 
-  // Put the original where the supplied file currently is.
-  function follow(force) {
+  function follow(driver, force) {
     if (!linked() || applying) return;
-    var t = toOriginal(vc.currentTime);
+    var other = driver === vc ? vo : vc;
+    var t = map(driver.currentTime, driver === vc ? 'c' : 'o', driver === vc ? 'o' : 'c');
     if (t === null) {
-      // Nothing in the original corresponds to this moment. Freeze rather
-      // than drift: a player showing an unrelated frame beside a claim is
-      // worse than a player that has stopped.
-      if (!vo.paused) vo.pause();
-      setAdrift(true, 'the original has no counterpart to this moment — it is held still');
+      if (!other.paused) other.pause();
+      setAdrift(other, true);
       return;
     }
-    setAdrift(false, '');
-    if (force || Math.abs(vo.currentTime - t) > 0.15) {
+    setAdrift(other, false);
+    if (force || Math.abs(other.currentTime - t) > 0.15) {
       applying = true;
-      try { vo.currentTime = t; } catch (e) {}
+      try { other.currentTime = t; } catch (e) {}
       setTimeout(function () { applying = false; }, 0);
     }
   }
 
-  vc.addEventListener('seeked', function () { follow(true); });
-  vc.addEventListener('timeupdate', function () { follow(false); });
-  vc.addEventListener('play', function () {
-    if (linked() && toOriginal(vc.currentTime) !== null) { vo.play().catch(function () {}); }
-  });
-  vc.addEventListener('pause', function () {
-    if (!linked()) return;
-    vo.pause();
-    // Land exactly on pause. While both are rolling the correction is kept
-    // loose on purpose — seeking a playing video to shave off a tenth of a
-    // second makes it stutter, and nobody compares two frames mid-playback.
-    // The moment you stop is the moment it has to be exact.
-    follow(true);
-  });
-  vc.addEventListener('ratechange', function () { if (linked()) vo.playbackRate = vc.playbackRate; });
-
-  // The original is the reference, so driving it drives nothing back — except
-  // pausing, which must stop both or the pair silently drifts apart.
-  vo.addEventListener('pause', function () { if (linked() && !vc.paused) vc.pause(); });
+  function wire(v) {
+    var other = v === vc ? vo : vc;
+    v.addEventListener('seeked', function () { follow(v, true); });
+    v.addEventListener('timeupdate', function () { follow(v, false); });
+    v.addEventListener('play', function () {
+      if (!linked() || applying) return;
+      // Only if the other side has somewhere to be. Starting a player that
+      // has no counterpart would walk it away from the moment being compared.
+      if (map(v.currentTime, v === vc ? 'c' : 'o', v === vc ? 'o' : 'c') !== null) {
+        applying = true;
+        other.play().catch(function () {});
+        setTimeout(function () { applying = false; }, 0);
+      }
+    });
+    v.addEventListener('pause', function () {
+      if (!linked() || applying) return;
+      applying = true;
+      other.pause();
+      setTimeout(function () { applying = false; }, 0);
+      // Land exactly on pause. While both are rolling the correction is kept
+      // loose on purpose — seeking a playing video to shave off a tenth of a
+      // second makes it stutter, and nobody compares two frames mid-playback.
+      // The moment you stop is the moment it has to be exact.
+      follow(v, true);
+    });
+    v.addEventListener('ratechange', function () {
+      if (linked()) other.playbackRate = v.playbackRate;
+    });
+  }
+  wire(vc);
+  wire(vo);
 
   if (link) {
     link.addEventListener('change', function () {
-      if (link.checked) { follow(true); } else { setAdrift(false, ''); }
+      if (link.checked) {
+        follow(vc, true);
+      } else {
+        setAdrift(vo, false);
+        setAdrift(vc, false);
+      }
     });
   }
 
@@ -816,10 +892,11 @@ window.editReportLink = function () {
     seek(vc, b.dataset.copy);
     if (b.dataset.orig !== undefined) {
       seek(vo, b.dataset.orig);
-      setAdrift(false, '');
+      setAdrift(vo, false);
+      setAdrift(vc, false);
     } else {
       vo.pause();
-      setAdrift(true, 'the original has no counterpart to this moment — it is held still');
+      setAdrift(vo, true);
     }
     setTimeout(function () { applying = false; }, 0);
     (vo || vc).scrollIntoView({ block: 'start', behavior: 'smooth' });
@@ -899,6 +976,7 @@ mod tests {
             short_id: "lzvYrVDnmEMQ",
             chain_verdict: "PASS — 5 chunk(s) fully verified",
             chain_passed: true,
+            chain_checked: true,
             original_src: "original.mp4",
             copy_src: "copy.mp4",
             original_label: "from the bundle",
@@ -950,6 +1028,51 @@ mod tests {
     }
 
     #[test]
+    fn a_matching_signature_is_stated_as_a_result_not_implied() {
+        // It used to read almost the same whether it matched or not, so a
+        // reader could not see that the cheapest decisive check had run.
+        let h = render(&base(), &inputs());
+        assert!(h.contains("carried by all 233 frame(s)"), "{h}");
+        assert!(h.contains("no other signature appears"));
+        assert!(h.contains("class=\"ok\""));
+    }
+
+    #[test]
+    fn no_recording_id_says_that_nothing_was_compared() {
+        let mut r = base();
+        r.tag_expected = None;
+        let h = render(&r, &inputs());
+        assert!(h.contains("compared to nothing"), "{h}");
+        assert!(
+            h.contains("class=\"warn\""),
+            "amber, not red: nothing is wrong"
+        );
+    }
+
+    #[test]
+    fn an_unchecked_chain_says_what_to_run() {
+        let mut i = inputs();
+        i.chain_checked = false;
+        let h = render(&base(), &i);
+        assert!(h.contains("was not checked here"), "{h}");
+        assert!(h.contains("verify_bundle.py"));
+        // And it must not stop the report: nothing was established about the
+        // chain, which is different from the chain having failed.
+        assert!(h.contains("Shots that correspond"));
+    }
+
+    #[test]
+    fn both_players_drive_each_other() {
+        let h = render(&base(), &inputs());
+        assert!(h.contains("wire(vc);"), "{h}");
+        assert!(h.contains("wire(vo);"), "the original must drive too");
+        assert!(
+            h.contains("function map(t, from, to)"),
+            "mapping must work both ways"
+        );
+    }
+
+    #[test]
     fn a_failed_chain_stops_before_any_comparison() {
         let mut i = inputs();
         i.chain_passed = false;
@@ -957,6 +1080,18 @@ mod tests {
         let h = render(&base(), &i);
         assert!(!h.contains("Shots that correspond"));
         assert!(h.contains("no established original"));
+    }
+
+    #[test]
+    fn a_wholly_different_recording_is_not_called_a_mixture() {
+        // The swapped-recording case: every frame is consistent, just not
+        // this bundle's. Calling it "more than one recording" would describe
+        // a different thing entirely.
+        let mut r = base();
+        r.tags_seen = vec![(0x68E8, 413)];
+        let h = render(&r, &inputs());
+        assert!(h.contains("is not the recording this bundle is for"), "{h}");
+        assert!(!h.contains("mixes more than one"));
     }
 
     #[test]

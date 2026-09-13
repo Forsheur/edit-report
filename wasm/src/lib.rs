@@ -302,6 +302,10 @@ pub extern "C" fn er_finish(fps: f64) -> usize {
                 short_id: &s.short_id,
                 chain_verdict: &s.chain_verdict,
                 chain_passed: s.chain_passed,
+                // Never, in a browser: there is no Python here and this
+                // project does not re-implement the check. The page says so
+                // in its own words.
+                chain_checked: false,
                 original_src: &s.original_src,
                 copy_src: &s.copy_src,
                 original_label: &s.original_label,
