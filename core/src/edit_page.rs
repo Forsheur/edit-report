@@ -803,12 +803,48 @@ window.editReportLink = function () {
   }
 
   // Both directions. Neither player is "the" driver: on screen they are two
-  // identical players, and nothing tells a reader which one commands. The
-  // first version made the supplied file drive and the original follow, which
-  // was the implementer's mental model leaking into the interface.
+  // identical players, and nothing tells a reader which one commands.
   var HELD = 'no counterpart to this moment — the other player is held still';
-  var applying = false;          // guard against the echo of our own seek
   function linked() { return link && link.checked; }
+
+  // ── Echo suppression ────────────────────────────────────────────────────
+  //
+  // Moving one player moves the other, which makes the other fire the very
+  // events we listen for. Telling our own echo from the reader's hand cannot
+  // be done with timing: the first version raised a flag and lowered it on the
+  // next macrotask, but a `seeked` arrives long after that, so every
+  // programmatic seek came back looking like a fresh one and the two players
+  // volleyed. Four scrubs produced 1998 events.
+  //
+  // So the echo is identified by its VALUE, not by when it arrives: we record
+  // what we asked for, and the matching event is consumed once.
+  var echo = { o: { seek: null, play: null }, c: { seek: null, play: null } };
+  function slot(v) { return v === vc ? echo.c : echo.o; }
+
+  function driveTime(target, t) {
+    slot(target).seek = t;
+    try { target.currentTime = t; } catch (e) {}
+  }
+  function drivePlay(target, playing) {
+    slot(target).play = playing;
+    if (playing) { target.play().catch(function () {}); } else { target.pause(); }
+  }
+  function isEcho(v, kind, value) {
+    var s = slot(v);
+    if (kind === 'seek') {
+      var mine = s.seek !== null && Math.abs(v.currentTime - s.seek) < 0.08;
+      s.seek = null;
+      return mine;
+    }
+    var want = s.play;
+    s.play = null;
+    return want !== null && want === value;
+  }
+
+  // Which player the reader last touched. Only that one corrects the other
+  // during playback: both fire `timeupdate` several times a second, and if
+  // each corrected the other they would argue over every tenth of a second.
+  var driver = null;
 
   function setAdrift(el, yes) {
     var fig = el && el.closest('figure');
@@ -819,48 +855,59 @@ window.editReportLink = function () {
     }
   }
 
-  function follow(driver, force) {
-    if (!linked() || applying) return;
-    var other = driver === vc ? vo : vc;
-    var t = map(driver.currentTime, driver === vc ? 'c' : 'o', driver === vc ? 'o' : 'c');
+  function follow(v, force) {
+    if (!linked()) return;
+    var other = v === vc ? vo : vc;
+    var t = map(v.currentTime, v === vc ? 'c' : 'o', v === vc ? 'o' : 'c');
     if (t === null) {
-      if (!other.paused) other.pause();
+      if (!other.paused) drivePlay(other, false);
       setAdrift(other, true);
       return;
     }
     setAdrift(other, false);
     if (force || Math.abs(other.currentTime - t) > 0.15) {
-      applying = true;
-      try { other.currentTime = t; } catch (e) {}
-      setTimeout(function () { applying = false; }, 0);
+      driveTime(other, t);
     }
   }
 
   function wire(v) {
     var other = v === vc ? vo : vc;
-    v.addEventListener('seeked', function () { follow(v, true); });
-    v.addEventListener('timeupdate', function () { follow(v, false); });
-    v.addEventListener('play', function () {
-      if (!linked() || applying) return;
-      // Only if the other side has somewhere to be. Starting a player that
-      // has no counterpart would walk it away from the moment being compared.
-      if (map(v.currentTime, v === vc ? 'c' : 'o', v === vc ? 'o' : 'c') !== null) {
-        applying = true;
-        other.play().catch(function () {});
-        setTimeout(function () { applying = false; }, 0);
-      }
-    });
-    v.addEventListener('pause', function () {
-      if (!linked() || applying) return;
-      applying = true;
-      other.pause();
-      setTimeout(function () { applying = false; }, 0);
-      // Land exactly on pause. While both are rolling the correction is kept
-      // loose on purpose — seeking a playing video to shave off a tenth of a
-      // second makes it stutter, and nobody compares two frames mid-playback.
-      // The moment you stop is the moment it has to be exact.
+
+    v.addEventListener('seeked', function () {
+      if (isEcho(v, 'seek')) return;
+      driver = v;
       follow(v, true);
     });
+
+    // Drift correction while both roll. Deliberately loose: seeking a playing
+    // video to shave off a tenth of a second makes it stutter, and nobody
+    // compares two frames mid-playback.
+    v.addEventListener('timeupdate', function () {
+      if (v !== driver) return;
+      follow(v, false);
+    });
+
+    v.addEventListener('play', function () {
+      if (isEcho(v, 'play', true)) return;
+      driver = v;
+      if (!linked()) return;
+      // Only if the other side has somewhere to be. Starting a player with no
+      // counterpart would walk it away from the moment being compared.
+      if (map(v.currentTime, v === vc ? 'c' : 'o', v === vc ? 'o' : 'c') !== null) {
+        drivePlay(other, true);
+      }
+    });
+
+    v.addEventListener('pause', function () {
+      if (isEcho(v, 'play', false)) return;
+      driver = v;
+      if (!linked()) return;
+      drivePlay(other, false);
+      // Land exactly on pause. The moment you stop is the moment it has to be
+      // exact, and this is the only place `force` is worth its cost.
+      follow(v, true);
+    });
+
     v.addEventListener('ratechange', function () {
       if (linked()) other.playbackRate = v.playbackRate;
     });
@@ -871,6 +918,7 @@ window.editReportLink = function () {
   if (link) {
     link.addEventListener('change', function () {
       if (link.checked) {
+        driver = vc;
         follow(vc, true);
       } else {
         setAdrift(vo, false);
@@ -883,22 +931,24 @@ window.editReportLink = function () {
   // that keeps rolling has moved off the frame by the time you look at it.
   function seek(v, t) {
     if (!v || t === undefined || t === null || t === '') return;
-    try { v.pause(); v.currentTime = parseFloat(t); } catch (e) {}
+    drivePlay(v, false);
+    driveTime(v, parseFloat(t));
   }
   document.addEventListener('click', function (e) {
     var b = e.target.closest && e.target.closest('button.at');
     if (!b) return;
-    applying = true;
+    // Both are driven from here, so both echoes are registered — otherwise
+    // each lands as a reader's seek and the pair starts volleying.
     seek(vc, b.dataset.copy);
     if (b.dataset.orig !== undefined) {
       seek(vo, b.dataset.orig);
       setAdrift(vo, false);
       setAdrift(vc, false);
     } else {
-      vo.pause();
+      drivePlay(vo, false);
       setAdrift(vo, true);
     }
-    setTimeout(function () { applying = false; }, 0);
+    driver = vc;
     (vo || vc).scrollIntoView({ block: 'start', behavior: 'smooth' });
   });
 
@@ -1277,6 +1327,32 @@ mod tests {
     fn a_run_without_the_localized_pass_says_so_rather_than_implying_nothing() {
         let h = render(&base(), &inputs());
         assert!(h.contains("Not performed in this run"));
+    }
+
+    #[test]
+    fn the_players_cannot_volley() {
+        // Moving one player moves the other, which makes the other fire the
+        // events we listen for. The first version told its own echo apart by
+        // timing — a flag lowered on the next macrotask — and a `seeked`
+        // arrives long after that, so four scrubs produced 1998 events in a
+        // copy/original volley. The echo is identified by its value now.
+        let h = render(&base(), &inputs());
+        assert!(h.contains("function isEcho(v, kind, value)"), "{h}");
+        assert!(
+            h.contains("slot(target).seek = t;"),
+            "a driven seek must be recorded"
+        );
+        assert!(
+            h.contains("slot(target).play = playing;"),
+            "a driven play must be recorded"
+        );
+        assert!(
+            !h.contains("applying"),
+            "the timing-based guard is back, and it cannot work"
+        );
+        // And only the player the reader touched corrects the other while
+        // both roll, or they argue over every tenth of a second.
+        assert!(h.contains("if (v !== driver) return;"));
     }
 
     #[test]
