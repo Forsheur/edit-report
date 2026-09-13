@@ -264,8 +264,7 @@ pub extern "C" fn er_finish(fps: f64) -> usize {
     S.with(|s| {
         let mut s = s.borrow_mut();
         let tuning = Tuning {
-            expected_tag: (!s.short_id.is_empty())
-                .then(|| bitrow::session_tag(Some(&s.short_id))),
+            expected_tag: (!s.short_id.is_empty()).then(|| bitrow::session_tag(Some(&s.short_id))),
             ..Tuning::every_frame(if fps > 0.0 { fps } else { 30.0 })
         };
         let r = declared::build_with(&s.copies, &s.originals, tuning);
@@ -275,11 +274,13 @@ pub extern "C" fn er_finish(fps: f64) -> usize {
             .originals
             .iter()
             .filter_map(|o| {
-                s.original_grids.get(&o.counter).map(|g| imagediff::OriginalGrid {
-                    counter: o.counter,
-                    t_us: o.t_us,
-                    grid: g.clone(),
-                })
+                s.original_grids
+                    .get(&o.counter)
+                    .map(|g| imagediff::OriginalGrid {
+                        counter: o.counter,
+                        t_us: o.t_us,
+                        grid: g.clone(),
+                    })
             })
             .collect();
         let cgrids: Vec<imagediff::CopyGrid> = s

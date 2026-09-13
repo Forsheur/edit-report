@@ -63,7 +63,7 @@ fn scan(
     scale: f32,
     diff: &DiffSettings,
 ) -> Result<Vec<Row>, DecodeError> {
-    let mut rows = Vec::with_capacity(profile.frame_count.max(0) as usize);
+    let mut rows = Vec::with_capacity(profile.frame_count as usize);
     decode::decode_stream(path, profile, 1, |frame| {
         rows.push(Row {
             reading: bitrow::read(&frame, scale).ok(),

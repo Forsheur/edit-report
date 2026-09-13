@@ -12,9 +12,7 @@
 //! no verdict, gives the recording no score, and says "no correspondence was
 //! established" where it has nothing — never "falsification".
 
-use crate::declared::{
-    DeclaredCorrespondence, DeclaredSegment, FrameNote, JoinKind, NoteReason,
-};
+use crate::declared::{DeclaredCorrespondence, DeclaredSegment, FrameNote, JoinKind, NoteReason};
 use crate::imagediff::{self, DiffSettings, DifferenceState, Located};
 
 fn esc(s: &str) -> String {
@@ -301,9 +299,8 @@ pub fn fragment(r: &DeclaredCorrespondence, inputs: &PageInputs) -> String {
                                section 3 says whether the join around it accounts for the \
                                time"
                         .to_string(),
-                    (d, 0) => format!(
-                        "{d} frame(s) carry a frame number the original does not have"
-                    ),
+                    (d, 0) =>
+                        format!("{d} frame(s) carry a frame number the original does not have"),
                     (d, c) => format!(
                         "{d} frame(s) carry a frame number; {c} of them name a moment of \
                          the original and do not look like it"
@@ -593,15 +590,32 @@ fn shot_row(n: usize, s: &DeclaredSegment, confirm: u32) -> String {
          <td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}/63</td></tr>\n",
         if s.is_clean() { "clean" } else { "" },
         n,
-        at(s.copy_start_us, Some(s.original_start_us), &clock(s.copy_start_us)),
-        at(s.copy_end_us, Some(s.original_end_us), &clock(s.copy_end_us)),
-        at(s.copy_start_us, Some(s.original_start_us), &clock(s.original_start_us)),
-        at(s.copy_end_us, Some(s.original_end_us), &clock(s.original_end_us)),
+        at(
+            s.copy_start_us,
+            Some(s.original_start_us),
+            &clock(s.copy_start_us)
+        ),
+        at(
+            s.copy_end_us,
+            Some(s.original_end_us),
+            &clock(s.copy_end_us)
+        ),
+        at(
+            s.copy_start_us,
+            Some(s.original_start_us),
+            &clock(s.original_start_us)
+        ),
+        at(
+            s.copy_end_us,
+            Some(s.original_end_us),
+            &clock(s.original_end_us)
+        ),
         s.frames_examined,
         s.frames_confirmed,
         s.differing.len(),
         s.inconclusive.len(),
-        s.worst_confirmed_distance.min(confirm.max(s.worst_confirmed_distance)),
+        s.worst_confirmed_distance
+            .min(confirm.max(s.worst_confirmed_distance)),
     )
 }
 
@@ -616,8 +630,10 @@ fn frame_line(shot: usize, n: &FrameNote) -> String {
         }
         NoteReason::NoDeclaration => "no readable strip".to_string(),
         NoteReason::TooFarToJudge => match n.distance {
-            Some(d) => format!("{d} of 63 bits apart — too far to confirm, not far enough to \
-                                call it a different picture"),
+            Some(d) => format!(
+                "{d} of 63 bits apart — too far to confirm, not far enough to \
+                                call it a different picture"
+            ),
             None => "the fingerprint did not settle it".to_string(),
         },
     };
@@ -899,7 +915,10 @@ mod tests {
     fn every_named_moment_is_a_control_that_drives_both_players() {
         let h = render(&base(), &inputs());
         // The differing frame is the one a reader must be able to reach.
-        assert!(h.contains(r#"data-copy="11.400" data-orig="17.700""#), "{h}");
+        assert!(
+            h.contains(r#"data-copy="11.400" data-orig="17.700""#),
+            "{h}"
+        );
         assert!(h.contains("id=\"vo\"") && h.contains("id=\"vc\""));
         assert!(h.contains("seek(vc, b.dataset.copy)"));
     }
@@ -916,7 +935,10 @@ mod tests {
             reason: NoteReason::NoDeclaration,
         }];
         let h = render(&r, &inputs());
-        assert!(h.contains(r#"<button class="at" data-copy="3.000">"#), "{h}");
+        assert!(
+            h.contains(r#"<button class="at" data-copy="3.000">"#),
+            "{h}"
+        );
     }
 
     #[test]
@@ -1038,8 +1060,14 @@ mod tests {
             worst_confirmed_distance: 2,
         });
         let h = render(&r, &inputs());
-        assert!(h.contains(r#"{"c0":0.000,"c1":7.730,"o0":0.000,"o1":7.730}"#), "{h}");
-        assert!(h.contains(r#"{"c0":8.000,"c1":13.730,"o0":14.000,"o1":19.730}"#), "{h}");
+        assert!(
+            h.contains(r#"{"c0":0.000,"c1":7.730,"o0":0.000,"o1":7.730}"#),
+            "{h}"
+        );
+        assert!(
+            h.contains(r#"{"c0":8.000,"c1":13.730,"o0":14.000,"o1":19.730}"#),
+            "{h}"
+        );
         assert!(h.contains("id=\"link\""));
     }
 

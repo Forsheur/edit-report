@@ -18,8 +18,8 @@ use edit_report::{bundle_dir, decode, editpass, pyverify};
 
 use edit_report_core::align::{self, Correspondence, Cut, Sample};
 use edit_report_core::bundle::Manifest;
-use edit_report_core::fingerprint::fingerprint;
 use edit_report_core::edit_page;
+use edit_report_core::fingerprint::fingerprint;
 use edit_report_core::html;
 use edit_report_core::normalize::Plan;
 use edit_report_core::qr::{sample_positions, QrFindings, ScanConfig, Survey};
@@ -161,7 +161,10 @@ fn parse_args() -> Result<Args, String> {
             "--sensitivity" => {
                 let v = it.next().ok_or("--sensitivity needs a value")?;
                 diff.sensitivity = v.to_string_lossy().parse().map_err(|_| {
-                    format!("--sensitivity wants a number, got {:?}", v.to_string_lossy())
+                    format!(
+                        "--sensitivity wants a number, got {:?}",
+                        v.to_string_lossy()
+                    )
                 })?;
                 if !(diff.sensitivity.is_finite() && diff.sensitivity > 0.0) {
                     return Err("--sensitivity must be a positive number".into());
@@ -447,12 +450,7 @@ fn run(args: &Args) -> Result<ExitCode, Box<dyn std::error::Error>> {
                     args.diff,
                     p,
                 )?;
-                eprintln!(
-                    "Wrote {} ({} shot(s), {} join(s))",
-                    p.display(),
-                    r.0,
-                    r.1
-                );
+                eprintln!("Wrote {} ({} shot(s), {} join(s))", p.display(), r.0, r.1);
             }
             _ => {
                 std::fs::write(p, html::render(&report))?;
@@ -500,7 +498,12 @@ fn edit_pass(
     );
     {
         use edit_report_core::imagediff::DifferenceState as D;
-        let count = |w: D| pass.located.iter().filter(|l| l.difference.state == w).count();
+        let count = |w: D| {
+            pass.located
+                .iter()
+                .filter(|l| l.difference.state == w)
+                .count()
+        };
         eprintln!(
             "  picture compared on {} frame(s): {} even, {} located, {} inconclusive",
             pass.located.len(),

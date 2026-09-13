@@ -273,7 +273,11 @@ impl Tuning {
     /// frame period; three of them is a floor that absorbs the step without
     /// absorbing an edit.
     pub fn every_frame(fps: f64) -> Self {
-        let period = if fps > 0.0 { 1_000_000.0 / fps } else { 33_333.0 };
+        let period = if fps > 0.0 {
+            1_000_000.0 / fps
+        } else {
+            33_333.0
+        };
         Tuning {
             continuity_floor_us: (period * 3.0).max(50_000.0),
             ..Tuning::default()
@@ -651,15 +655,14 @@ pub fn build_with(
             // counters as the original did. Going backwards, standing still,
             // or leaping ends it — each of those IS the edit, and belongs on
             // the boundary rather than inside a segment.
-            let continuous =
-                b > a
-                    && is_continuous(
-                        original,
-                        a,
-                        b,
-                        copy[i].copy_t_us - copy[last].copy_t_us,
-                        tuning.continuity_floor_us,
-                    );
+            let continuous = b > a
+                && is_continuous(
+                    original,
+                    a,
+                    b,
+                    copy[i].copy_t_us - copy[last].copy_t_us,
+                    tuning.continuity_floor_us,
+                );
             if !continuous {
                 flush(&mut run, &mut segments);
             }
@@ -844,8 +847,9 @@ fn merge_continuous(
             (true, Some(prev)) => {
                 prev.frames_confirmed += seg.frames_confirmed;
                 prev.frames_examined += seg.frames_examined;
-                prev.worst_confirmed_distance =
-                    prev.worst_confirmed_distance.max(seg.worst_confirmed_distance);
+                prev.worst_confirmed_distance = prev
+                    .worst_confirmed_distance
+                    .max(seg.worst_confirmed_distance);
                 prev.differing.extend(seg.differing.iter().copied());
                 prev.inconclusive.extend(seg.inconclusive.iter().copied());
                 prev.copy_end_us = seg.copy_end_us;

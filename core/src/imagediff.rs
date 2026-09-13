@@ -310,8 +310,7 @@ pub fn locate(
     s: &DiffSettings,
 ) -> Vec<Located> {
     use std::collections::{HashMap, HashSet};
-    let by_counter: HashMap<u64, &OriginalGrid> =
-        original.iter().map(|o| (o.counter, o)).collect();
+    let by_counter: HashMap<u64, &OriginalGrid> = original.iter().map(|o| (o.counter, o)).collect();
 
     let mut eligible: HashSet<u64> = HashSet::new();
     for seg in &correspondence.segments {
@@ -396,9 +395,9 @@ pub fn tracks(located: &[Located], gap: usize) -> Vec<Track> {
 
     for (step, l) in located.iter().enumerate() {
         for r in &l.difference.regions {
-            let hit = open.iter_mut().find(|o| {
-                step.saturating_sub(o.last_seen) <= gap + 1 && overlaps(&o.t.region, r)
-            });
+            let hit = open
+                .iter_mut()
+                .find(|o| step.saturating_sub(o.last_seen) <= gap + 1 && overlaps(&o.t.region, r));
             match hit {
                 Some(o) => {
                     // Union rather than intersection: the reader is being
@@ -514,7 +513,15 @@ pub fn compare(original: &TileGrid, copy: &TileGrid, s: &DiffSettings) -> FrameD
     let standout: Vec<bool> = (0..d.len())
         .map(|i| judged.binary_search(&i).is_ok() && d[i] > bar)
         .collect();
-    let regions = group(&standout, original.cols, original.rows, &d, baseline, spread, s);
+    let regions = group(
+        &standout,
+        original.cols,
+        original.rows,
+        &d,
+        baseline,
+        spread,
+        s,
+    );
 
     FrameDifference {
         state: if regions.is_empty() {
@@ -606,7 +613,11 @@ fn group(
             });
         }
     }
-    out.sort_by(|a, b| b.deviations.partial_cmp(&a.deviations).unwrap_or(std::cmp::Ordering::Equal));
+    out.sort_by(|a, b| {
+        b.deviations
+            .partial_cmp(&a.deviations)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     out
 }
 
@@ -619,7 +630,11 @@ mod tests {
         let mut data = vec![0u8; (w * h) as usize];
         for y in 0..h {
             for x in 0..w {
-                data[(y * w + x) as usize] = if ((x + y + phase) / 4) % 2 == 0 { 40 } else { 200 };
+                data[(y * w + x) as usize] = if ((x + y + phase) / 4) % 2 == 0 {
+                    40
+                } else {
+                    200
+                };
             }
         }
         LumaFrame::new(w, h, data, 0, 0).unwrap()
@@ -633,7 +648,10 @@ mod tests {
     fn patch(f: &LumaFrame, x: f32, y: f32, w: f32, h: f32, v: u8) -> LumaFrame {
         let mut data = f.data.clone();
         let (x0, y0) = ((x * f.width as f32) as u32, (y * f.height as f32) as u32);
-        let (x1, y1) = (x0 + (w * f.width as f32) as u32, y0 + (h * f.height as f32) as u32);
+        let (x1, y1) = (
+            x0 + (w * f.width as f32) as u32,
+            y0 + (h * f.height as f32) as u32,
+        );
         for yy in y0..y1.min(f.height) {
             for xx in x0..x1.min(f.width) {
                 data[(yy * f.width + xx) as usize] = v;
@@ -733,15 +751,25 @@ mod tests {
         let f = textured(320, 320, 0);
         let banded = patch(&f, 0.0, 0.0, 1.0, 0.08, 255);
         let r = run(&f, &banded);
-        assert_eq!(r.state, DifferenceState::ConsistentWithRecompression, "{r:?}");
+        assert_eq!(
+            r.state,
+            DifferenceState::ConsistentWithRecompression,
+            "{r:?}"
+        );
     }
 
     #[test]
     fn sensitivity_is_a_dial_and_lowering_it_finds_more() {
         let f = textured(320, 320, 0);
         let edited = patch(&f, 0.3, 0.3, 0.08, 0.08, 90);
-        let strict = DiffSettings { sensitivity: 40.0, ..Default::default() };
-        let loose = DiffSettings { sensitivity: 2.0, ..Default::default() };
+        let strict = DiffSettings {
+            sensitivity: 40.0,
+            ..Default::default()
+        };
+        let loose = DiffSettings {
+            sensitivity: 2.0,
+            ..Default::default()
+        };
         let (a, b) = (tile_stats(&f, &strict), tile_stats(&edited, &strict));
         assert!(compare(&a, &b, &strict).regions.len() <= compare(&a, &b, &loose).regions.len());
     }
@@ -757,7 +785,11 @@ mod tests {
                 copy_t_us: i as i64 * 33_333,
                 original_t_us: i as i64 * 33_333,
                 counter: i + 1,
-                difference: compare(&og, &tile_stats(&patch(&f, 0.25, 0.5, 0.25, 0.25, 128), &s), &s),
+                difference: compare(
+                    &og,
+                    &tile_stats(&patch(&f, 0.25, 0.5, 0.25, 0.25, 128), &s),
+                    &s,
+                ),
             })
             .collect();
         let t = tracks(&located, 1);

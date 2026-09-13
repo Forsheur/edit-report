@@ -6,7 +6,9 @@ name: ci
 
 on:
   push:
-    branches: [main]
+    # Both, because the repository's default branch is `master` and a workflow
+    # that silently never runs is worse than no workflow.
+    branches: [main, master]
     tags: ['v*']
   pull_request:
 
