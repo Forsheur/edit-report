@@ -53,12 +53,18 @@ say() { printf '  %-32s %s\n' "$1" "$2"; }
 : > "$OUT/expected.tsv"
 note() { printf '%s\t%s\n' "$1" "$2" >> "$OUT/expected.tsv"; }
 
-# Frame geometry of the seed, needed for the scaled copies: libx264 refuses an
-# odd width, and `scale=iw*2/3` produced 853 and failed outright the first time.
-W=$(ffprobe -v error -select_streams v:0 -show_entries stream=width -of csv=p=0 "$SRC" | tr -d ',')
+# Frame geometry of the seed. Both axes, and derived rather than assumed:
+# every case below used to hardcode 720x1280, so pointing the script at a
+# landscape recording made the splice fail with "Input link parameters do not
+# match" and put the retouch box outside the frame.
+#
+# libx264 also refuses an odd width, and `scale=iw*2/3` produced 853 and failed
+# outright the first time, hence `even`.
+read -r W H <<< "$(ffprobe -v error -select_streams v:0 \
+  -show_entries stream=width,height -of csv=p=0:nk=1 "$SRC" | tr '\n,' '  ')"
 even() { echo $((($1 / 2) * 2)); }
 
-echo "Deriving from $SRC (${W}px wide)"
+echo "Deriving from $SRC (${W}x${H})"
 
 # ── 1 · A faithful copy ───────────────────────────────────────────────────
 # Re-encoded, because that is what happens to a file that travels. It is still
@@ -92,7 +98,19 @@ if [ -f "$ALIEN" ]; then
   # its strip, which is the honest situation: inserted footage usually carries
   # no readable number, and what proves the insertion is the time the copy
   # spends where the original does not.
-  ff -i "$ALIEN" -t 1 -vf "transpose=1,scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2" \
+  # Into the SEED's geometry, whatever that is — concat refuses two different
+  # sizes. Rotate first only when the two recordings disagree about which way
+  # up they are, so a portrait insert into a landscape film is not reduced to
+  # a sliver between two black bars.
+  read -r AW AH <<< "$(ffprobe -v error -select_streams v:0 \
+    -show_entries stream=width,height -of csv=p=0:nk=1 "$ALIEN" | tr '\n,' '  ')"
+  rotate=""
+  if { [ "$W" -gt "$H" ] && [ "$AW" -lt "$AH" ]; } || \
+     { [ "$W" -lt "$H" ] && [ "$AW" -gt "$AH" ]; }; then
+    rotate="transpose=1,"
+  fi
+  ff -i "$ALIEN" -t 1 -vf \
+     "${rotate}scale=$W:$H:force_original_aspect_ratio=decrease,pad=$W:$H:(ow-iw)/2:(oh-ih)/2" \
      -c:v libx264 -b:v 3000k -an "$OUT/.foreign-snippet.mp4"
   ff -i "$SRC" -i "$OUT/.foreign-snippet.mp4" -filter_complex \
     "[0:v]trim=0:9,setpts=PTS-STARTPTS[a];[1:v]setpts=PTS-STARTPTS[m];[0:v]trim=9,setpts=PTS-STARTPTS[b];[a][m][b]concat=n=3:v=1[v]" \
@@ -114,9 +132,13 @@ fi
 # The two cases the frame-number path cannot see at all: nothing is cut, moved
 # or inserted, the counters run on perfectly, and the difference is in the
 # pixels. This is what the localised comparison exists for.
-ff -i "$SRC" -vf "drawbox=x=120:y=700:w=200:h=200:color=black:t=fill:enable='between(t,6,10)'" \
+# Placed in fractions of the frame, not in pixels: at 1280x720 a box at y=700
+# 200 tall falls off the bottom, and the case silently stopped testing
+# anything. A sixth of the frame, below the middle, on any geometry.
+BX=$((W / 6)); BY=$((H * 55 / 100)); BW=$((W / 4)); BH=$((H / 5))
+ff -i "$SRC" -vf "drawbox=x=$BX:y=$BY:w=$BW:h=$BH:color=black:t=fill:enable='between(t,6,10)'" \
    -c:v libx264 -b:v 3000k -an "$OUT/case6-retouched.mp4"
-say "case6-retouched.mp4" "200×200 patch, 6 s → 10 s"
+say "case6-retouched.mp4" "${BW}x${BH} patch at ($BX,$BY), 6 s → 10 s"
 note "case6-retouched.mp4" "1 shot, 0 cuts; a located region around (17%, 55%) for ~4 s"
 
 # One frame replaced by a blurred copy of itself: everything around it is
