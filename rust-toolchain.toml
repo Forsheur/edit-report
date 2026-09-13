@@ -1,0 +1,18 @@
+# The compiler version is part of the artefact.
+#
+# Two people building this commit must get the same bytes, or the SHA-256 we
+# publish beside a release is a number nobody can check — and an unverifiable
+# hash is worse than none, because it looks like a verification.
+#
+# `stable` does not give that: it means "whatever was stable that day", and a
+# different rustc produces different code. So the version is written down here
+# and moved deliberately, never by the calendar.
+#
+# The other half of the same problem — the builder's home directory ending up
+# inside the binary — is handled by the --remap-path-prefix flags in
+# web/build-single.sh and in the release job.
+[toolchain]
+channel = "1.93.0"
+profile = "minimal"
+components = ["clippy", "rustfmt"]
+targets = ["wasm32-unknown-unknown"]

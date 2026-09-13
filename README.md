@@ -287,6 +287,32 @@ Dependencies are pinned to exact versions and `Cargo.lock` is committed,
 binaries included: a verification tool whose build is not reproducible cannot
 ask anyone to trust its output.
 
+The compiler version is pinned too, in `rust-toolchain.toml`. `stable` means
+"whatever was stable that day", and a different rustc produces different bytes
+— which would make the SHA-256 published beside each release a number nobody
+else could recalculate. An unverifiable hash is worse than none, because it
+looks like a verification.
+
+### Checking a release
+
+Every tagged build is produced by CI, never on a developer machine, and
+published as a permanent GitHub Release with `SHA256SUMS` covering every file.
+
+    # Where did this file come from?
+    gh attestation verify edit-report.html --repo <owner>/edit-report
+
+    # Does it match the source?
+    git checkout v0.1.0
+    ./web/build-single.sh
+    shasum -a 256 dist/edit-report.html      # must equal the published digest
+
+The attestation is a signed statement, in a public transparency log, that this
+file was produced by this workflow from this commit. It says where the file
+came from. The rebuild says the file matches the source. **Neither says the
+source is honest** — that part is on the reader, which is why the report names
+frame numbers and timestamps and puts both videos on screen: a claim you can
+check with your own eyes needs no chain of hashes at all.
+
 Development happens on macOS Apple Silicon. Windows and Linux binaries are built
 in CI, never on a developer machine — see `.github/workflows/`.
 
