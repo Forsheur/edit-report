@@ -173,7 +173,12 @@ pub fn fragment(r: &DeclaredCorrespondence, inputs: &PageInputs) -> String {
     h.push_str("</section>\n");
 
     // ── The players ──────────────────────────────────────────────────────
-    h.push_str("<section class=\"players\">\n");
+    //
+    // The row is its own element. The link bar used to be a third flex item
+    // beside the two figures, so the row re-distributed every time the
+    // "held still" notice appeared — which is exactly at a cut, the moment a
+    // reader is looking hardest. The picture jumped from 242 to 306 px.
+    h.push_str("<section class=\"players\">\n<div class=\"playerrow\">\n");
     h.push_str(&format!(
         "<figure><figcaption>Original — {}</figcaption>\
          <video id=\"vo\" controls preload=\"metadata\" src=\"{}\"></video>\
@@ -191,7 +196,7 @@ pub fn fragment(r: &DeclaredCorrespondence, inputs: &PageInputs) -> String {
         esc(inputs.copy_src)
     ));
     h.push_str(
-        "<p class=\"linkbar\"><label><input type=\"checkbox\" id=\"link\" checked> \
+        "</div>\n<p class=\"linkbar\"><label><input type=\"checkbox\" id=\"link\" checked> \
          Keep the two players together</label> \
          <span id=\"linkstate\" class=\"note\"></span></p>\n",
     );
@@ -736,12 +741,18 @@ h2 { font-size:16px; margin:32px 0 8px; padding-bottom:4px; border-bottom:1px so
 pre { background:rgba(127,127,127,.12); padding:8px 10px; border-radius:4px;
       overflow-x:auto; font-size:13px; }
 .note, .sub { color:var(--dim); font-size:13px; }
-.players { display:flex; gap:12px; flex-wrap:wrap; position:sticky; top:0;
-           background:Canvas; padding:8px 0; z-index:5; border-bottom:1px solid var(--line); }
+.players { position:sticky; top:0; background:Canvas; padding:8px 0; z-index:5;
+           border-bottom:1px solid var(--line); }
+.playerrow { display:flex; gap:12px; flex-wrap:wrap; }
 .players figure { flex:1 1 300px; margin:0; min-width:0; }
 .players figcaption { font-size:12px; color:var(--dim); margin-bottom:4px; }
 .players video { width:100%; max-height:42vh; background:#000; }
-.linkbar { margin:6px 0 0; font-size:13px; display:flex; gap:10px; align-items:center; }
+/* Two lines' worth reserved whether the notice is showing or not: it appears
+   exactly at a cut, and a bar that grows there would shove the picture down
+   at the moment the reader is looking hardest. */
+.linkbar { margin:6px 0 0; font-size:13px; display:flex; gap:10px;
+           align-items:baseline; flex-wrap:wrap; min-height:2.6em; }
+.linkbar label { white-space:nowrap; }
 .players figure.adrift video { outline:2px solid var(--bad); outline-offset:-2px; }
 .repick { display:inline-block; font-size:12px; color:var(--dim); margin-top:4px; cursor:pointer; }
 .repick input { display:none; }
@@ -804,7 +815,7 @@ window.editReportLink = function () {
 
   // Both directions. Neither player is "the" driver: on screen they are two
   // identical players, and nothing tells a reader which one commands.
-  var HELD = 'no counterpart to this moment — the other player is held still';
+  var HELD = 'no counterpart here — the other player is held still';
   function linked() { return link && link.checked; }
 
   // ── Echo suppression ────────────────────────────────────────────────────
@@ -1353,6 +1364,26 @@ mod tests {
         // And only the player the reader touched corrects the other while
         // both roll, or they argue over every tenth of a second.
         assert!(h.contains("if (v !== driver) return;"));
+    }
+
+    #[test]
+    fn the_link_bar_is_not_a_third_player() {
+        // It was a flex item beside the two figures, so the row redistributed
+        // whenever the "held still" notice appeared — at a cut, which is the
+        // moment a reader is looking hardest. The picture jumped 242 → 306 px.
+        let h = render(&base(), &inputs());
+        let row = h
+            .find("<div class=\"playerrow\">")
+            .expect("the row must exist");
+        let bar = h.find("class=\"linkbar\"").expect("the bar must exist");
+        let close = h
+            .find("</div>\n<p class=\"linkbar\"")
+            .expect("the bar sits after the row");
+        assert!(row < close && close < bar + 40);
+        assert!(
+            h.contains("min-height:2.6em"),
+            "the bar must reserve its space"
+        );
     }
 
     #[test]
