@@ -29,7 +29,7 @@ use edit_report_core::declared::{self, Declared, OriginalFrame, Tuning};
 use edit_report_core::edit_page::{self, PageInputs};
 use edit_report_core::fingerprint::fingerprint;
 use edit_report_core::frame::LumaFrame;
-use edit_report_core::imagediff::{self, DiffSettings, Located, TileGrid};
+use edit_report_core::imagediff::{self, DiffSettings, Located, OutOfPlace, TileGrid};
 use std::cell::RefCell;
 
 #[derive(Default)]
@@ -50,6 +50,7 @@ struct Session {
     copy_grids: Vec<(u64, i64, Option<u64>, TileGrid)>,
     diff: DiffSettings,
     located: Vec<Located>,
+    out_of_place: Vec<OutOfPlace>,
     copy_frames: usize,
     copy_duration_us: i64,
     short_id: String,
@@ -139,11 +140,14 @@ pub unsafe extern "C" fn er_set_text(field: u32, ptr: *const u8, len: usize) {
 /// The localised comparison's dials, straight from the interface.
 /// `sensitivity` is in median-absolute-deviations; `grid` is tiles per side.
 #[no_mangle]
-pub extern "C" fn er_set_diff(sensitivity: f32, grid: u32) {
+pub extern "C" fn er_set_diff(sensitivity: f32, grid: u32, frame_sensitivity: f32) {
     S.with(|s| {
         let mut s = s.borrow_mut();
         if sensitivity.is_finite() && sensitivity > 0.0 {
             s.diff.sensitivity = sensitivity;
+        }
+        if frame_sensitivity.is_finite() && frame_sensitivity > 0.0 {
+            s.diff.frame_sensitivity = frame_sensitivity;
         }
         if (2..=64).contains(&grid) {
             s.diff.cols = grid;
@@ -294,6 +298,7 @@ pub extern "C" fn er_finish(fps: f64) -> usize {
             })
             .collect();
         s.located = imagediff::locate(&r, &ogrids, &cgrids, &s.diff);
+        s.out_of_place = imagediff::out_of_place(&r, &ogrids, &cgrids, &s.diff);
 
         let seconds = (s.copy_duration_us.max(0) as f64) / 1e6;
         let html = edit_page::fragment(
@@ -315,6 +320,7 @@ pub extern "C" fn er_finish(fps: f64) -> usize {
                 located: &s.located,
                 diff: s.diff,
                 located_ran: true,
+                out_of_place: &s.out_of_place,
             },
         );
         s.out = html;

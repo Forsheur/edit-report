@@ -245,6 +245,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 located: &pass.located,
                 diff: pass.diff_settings,
                 located_ran: true,
+                out_of_place: &pass.out_of_place,
             },
         );
         std::fs::write(&out, page)?;

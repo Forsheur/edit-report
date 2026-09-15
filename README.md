@@ -109,6 +109,16 @@ because two measurements cannot be right for every camera, codec and bit rate.
 `imagediff::Measure` names the statistic; adding a variant to it is the
 intended way to change what is measured, and it touches nothing else.
 
+A second question runs alongside it, per shot: **is this frame's difference
+normal for this film?** A frame that was blurred, graded, re-rendered or
+swapped in from another source differs *evenly*, so the question above reads it
+as a recompression and it vanishes into the conforming count — measured, a
+blurred frame that had lost 85 % of its texture was reported as conforming.
+Each frame's overall difference is now compared with the spread of its own
+shot's, at `--frame-sensitivity` deviations. It caught that frame at 26.7 and
+fired on nothing else across fourteen test files. It cannot see a change
+applied to the whole film, nor one inside footage too flat to measure.
+
 The top tenth of the frame is left out: that is the burn-in band, whose content
 is checked elsewhere and by checksum, and whose hard black-on-white edges are
 the noisiest thing in the picture under recompression.

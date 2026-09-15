@@ -77,6 +77,19 @@ pub struct DiffSettings {
     /// Tiles a region must span before it is reported. One tile out of 256 is
     /// as likely to be an encoder artefact as anything else.
     pub min_region_tiles: usize,
+    /// How far above ITS OWN SHOT's typical difference a frame must sit before
+    /// it is called out, in median-absolute-deviations.
+    ///
+    /// A separate dial from `sensitivity`, because it answers a separate
+    /// question. `sensitivity` asks "does one part of this frame stand out
+    /// from the rest of it"; this asks "does this frame stand out from its
+    /// neighbours". A change that is even across the frame — a blur, a grade,
+    /// a re-render, a frame swapped in from elsewhere — is invisible to the
+    /// first and obvious to the second.
+    pub frame_sensitivity: f32,
+    /// Frames a shot must have before its own distribution means anything.
+    /// A run of four frames has no typical value to be unusual against.
+    pub min_shot_frames: usize,
     /// Fraction of the frame height to leave out, for the burn-in band.
     ///
     /// The band carries the same content in both files by construction, and
@@ -106,6 +119,14 @@ impl Default for DiffSettings {
             // is right for every camera, codec and bit rate, and the residue
             // either side of it is reported rather than hidden.
             sensitivity: 12.0,
+            // Measured on a real recording with one frame blurred: its
+            // neighbours differ from the original by 3.6 and 6.0 grey levels
+            // on average, the blurred one by 19.7. Eight deviations sits well
+            // clear of the frame-to-frame jitter of an ordinary re-encode and
+            // well below that gap. Like every other number here it is a dial,
+            // not a constant of nature.
+            frame_sensitivity: 8.0,
+            min_shot_frames: 24,
             min_region_tiles: 2,
             // The band is 98 px on a 1280-tall frame; a tenth covers it in
             // both orientations with room to spare.
@@ -455,6 +476,213 @@ pub fn tracks(located: &[Located], gap: usize) -> Vec<Track> {
     done
 }
 
+/// One frame that does not sit with its neighbours.
+///
+/// Not "modified" — the report says what was measured and lets the reader
+/// look. What is measured is that this frame departs from the original far
+/// more than the frames around it do, in a shot where the others agree.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct OutOfPlace {
+    pub copy_index: u64,
+    pub copy_t_us: i64,
+    pub original_t_us: i64,
+    pub counter: u64,
+    /// This frame's own median tile difference.
+    pub baseline: f32,
+    /// What the rest of its shot sits at.
+    pub shot_baseline: f32,
+    /// How far above that, in the shot's own deviations.
+    pub deviations: f32,
+}
+
+/// Frames whose difference from the original is unusual **for their own shot**.
+///
+/// The gap this closes. Everything else here compares a frame with the
+/// original's frame of the same number and asks whether the difference is
+/// spread out or concentrated. A frame that was blurred, graded, re-rendered
+/// or swapped in from another source differs EVENLY — so it reads as
+/// "consistent with recompression", which is exactly what a recompression
+/// reads as, and the frame vanishes into the conforming count. Measured on a
+/// real recording: one blurred frame lost 85 % of its texture and the report
+/// called it conforming, alongside 561 others.
+///
+/// What that comparison never asks is whether the amount of difference is
+/// normal for this film. Its neighbours differed by 3.6 and 6.0 grey levels;
+/// it differed by 19.7. Every frame carries such a number already — this puts
+/// them side by side.
+///
+/// Judged per shot and against the shot's own spread, so nothing is compared
+/// to a published constant: a heavily recompressed film raises the bar for
+/// itself, a clean one lowers it.
+///
+/// **What it cannot see.** A change applied to the whole film. If every frame
+/// is blurred, every frame's neighbours are blurred too, nothing stands out,
+/// and this says nothing — the shot's "worst confirmed" figure and the
+/// reader's own eyes are what remain.
+pub fn out_of_place(
+    correspondence: &crate::declared::DeclaredCorrespondence,
+    original: &[OriginalGrid],
+    copy: &[CopyGrid],
+    s: &DiffSettings,
+) -> Vec<OutOfPlace> {
+    use std::collections::HashMap;
+    let by_counter: HashMap<u64, &OriginalGrid> = original.iter().map(|o| (o.counter, o)).collect();
+
+    let mut out = Vec::new();
+    for seg in &correspondence.segments {
+        // Every frame of the shot that can be measured at all, including the
+        // ones the fingerprint could not settle.
+        //
+        // Those are the important ones and they were being dropped: a blur
+        // moves the fingerprint into the unsettled band, `locate` skips
+        // unsettled frames because asking WHERE two unmatched pictures differ
+        // has no answer — and this check, which exists to catch exactly that
+        // frame, inherited the exclusion. On one of two test recordings the
+        // blurred frame was invisible for that reason alone.
+        //
+        // Asking HOW MUCH a frame differs is a different question from asking
+        // where, and it has an answer whatever the fingerprint decided.
+        let mut mine: Vec<(&CopyGrid, &OriginalGrid, f32)> = Vec::new();
+        for c in copy {
+            if c.t_us < seg.copy_start_us || c.t_us > seg.copy_end_us {
+                continue;
+            }
+            let Some(counter) = c.counter else { continue };
+            let Some(o) = by_counter.get(&counter) else {
+                continue;
+            };
+            let d = compare(&o.grid, &c.grid, s);
+            // A frame with nothing to compare — flat, blown out — has no
+            // baseline worth the name and must not drag the shot's down.
+            if d.inconclusive_because == Some(Unsupportable::NoStructure) {
+                continue;
+            }
+            mine.push((c, o, d.baseline));
+        }
+        if mine.len() < s.min_shot_frames {
+            continue;
+        }
+
+        let mut b: Vec<f32> = mine.iter().map(|(_, _, x)| *x).collect();
+        let typical = median(&mut b);
+        let mut devs: Vec<f32> = b.iter().map(|x| (x - typical).abs()).collect();
+        // A floor, or a shot whose frames all differ by exactly the same
+        // amount would call its own rounding an anomaly.
+        let spread = median(&mut devs).max(1.5);
+        let bar = typical + s.frame_sensitivity.max(1.0) * spread;
+
+        for (c, o, baseline) in mine {
+            if baseline > bar {
+                out.push(OutOfPlace {
+                    copy_index: c.index,
+                    copy_t_us: c.t_us,
+                    original_t_us: o.t_us,
+                    counter: c.counter.unwrap_or(0),
+                    baseline,
+                    shot_baseline: typical,
+                    deviations: (baseline - typical) / spread,
+                });
+            }
+        }
+    }
+    out.sort_by(|a, b| {
+        b.deviations
+            .partial_cmp(&a.deviations)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    out
+}
+
+/// Frames out of place that sit together in time.
+///
+/// The shape of what was found carries as much as the count. An encoder
+/// cannot degrade one frame and spare its neighbours — its rate control
+/// settles over a RUN of frames, typically at the start of a file. A frame
+/// that was blurred, graded or swapped in is by nature a single-frame event.
+///
+/// Nothing is suppressed by this grouping. A blurred passage is a run too,
+/// and a real finding; the report shows the shape and the reader judges.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct OutOfPlaceRun {
+    pub frames: usize,
+    pub first_copy_t_us: i64,
+    pub last_copy_t_us: i64,
+    pub first_counter: u64,
+    pub last_counter: u64,
+    /// Where the first of them sits in the original.
+    pub original_t_us: i64,
+    pub peak_baseline: f32,
+    pub shot_baseline: f32,
+    pub peak_deviations: f32,
+    /// Whether it begins in the opening second of the supplied file — where a
+    /// codec's rate control is still settling. Stated as a fact for the reader
+    /// to weigh, not used to drop anything.
+    pub at_file_start: bool,
+}
+
+impl OutOfPlaceRun {
+    pub fn duration_us(&self) -> i64 {
+        self.last_copy_t_us - self.first_copy_t_us
+    }
+    pub fn is_single_frame(&self) -> bool {
+        self.frames == 1
+    }
+}
+
+/// How far apart two out-of-place frames may sit and still be one run. Half a
+/// second: a codec settling produces a burst inside that, and two genuinely
+/// separate events are unlikely to fall inside it.
+const RUN_GAP_US: i64 = 500_000;
+
+/// Frames within this of the file's start are in the opening, where rate
+/// control is still finding its level.
+const FILE_START_US: i64 = 1_000_000;
+
+pub fn out_of_place_runs(items: &[OutOfPlace]) -> Vec<OutOfPlaceRun> {
+    let mut sorted: Vec<&OutOfPlace> = items.iter().collect();
+    sorted.sort_by_key(|o| o.copy_t_us);
+
+    let mut out: Vec<OutOfPlaceRun> = Vec::new();
+    for o in sorted {
+        match out.last_mut() {
+            Some(run) if o.copy_t_us - run.last_copy_t_us <= RUN_GAP_US => {
+                run.frames += 1;
+                run.last_copy_t_us = o.copy_t_us;
+                run.last_counter = o.counter;
+                if o.deviations > run.peak_deviations {
+                    run.peak_deviations = o.deviations;
+                    run.peak_baseline = o.baseline;
+                }
+            }
+            _ => out.push(OutOfPlaceRun {
+                frames: 1,
+                first_copy_t_us: o.copy_t_us,
+                last_copy_t_us: o.copy_t_us,
+                first_counter: o.counter,
+                last_counter: o.counter,
+                original_t_us: o.original_t_us,
+                peak_baseline: o.baseline,
+                shot_baseline: o.shot_baseline,
+                peak_deviations: o.deviations,
+                at_file_start: o.copy_t_us <= FILE_START_US,
+            }),
+        }
+    }
+    // Single frames first: they are the shape an alteration takes, and a
+    // reader with limited time should meet them before a codec's warm-up.
+    out.sort_by(|a, b| {
+        a.is_single_frame()
+            .cmp(&b.is_single_frame())
+            .reverse()
+            .then(
+                b.peak_deviations
+                    .partial_cmp(&a.peak_deviations)
+                    .unwrap_or(std::cmp::Ordering::Equal),
+            )
+    });
+    out
+}
+
 /// Below this, a tile has no structure in either frame and comparing it says
 /// nothing. A lens cap, a wall, an over-exposed sky, or the grey table a phone
 /// was left face-down on all land here.
@@ -660,6 +888,30 @@ mod tests {
         LumaFrame::new(f.width, f.height, data, 0, 0).unwrap()
     }
 
+    /// Texture gone, means kept — what a blur does, and what every other
+    /// check here mistakes for a recompression.
+    fn blur(f: &LumaFrame) -> LumaFrame {
+        let (w, h) = (f.width, f.height);
+        let mut data = vec![0u8; (w * h) as usize];
+        let r = 6i32;
+        for y in 0..h as i32 {
+            for x in 0..w as i32 {
+                let (mut sum, mut n) = (0u32, 0u32);
+                for dy in -r..=r {
+                    for dx in -r..=r {
+                        let (px, py) = (x + dx, y + dy);
+                        if px >= 0 && py >= 0 && px < w as i32 && py < h as i32 {
+                            sum += f.at(px as u32, py as u32) as u32;
+                            n += 1;
+                        }
+                    }
+                }
+                data[(y as u32 * w + x as u32) as usize] = (sum / n.max(1)) as u8;
+            }
+        }
+        LumaFrame::new(w, h, data, 0, 0).unwrap()
+    }
+
     /// Everywhere-a-little, the way a codec degrades a picture.
     fn noisy(f: &LumaFrame, amount: i32) -> LumaFrame {
         let mut data = f.data.clone();
@@ -820,6 +1072,123 @@ mod tests {
         let t = tracks(&located, 1);
         assert!(t.len() >= 3, "scattered regions were merged: {t:?}");
         assert!(t.iter().all(|k| k.frames <= 2));
+    }
+
+    /// A shot of `n` frames, one of which is blurred — the attack the
+    /// per-frame comparison cannot see, because the change is even.
+    fn shot_with_one_blurred(n: usize, at: usize) -> (Vec<OriginalGrid>, Vec<CopyGrid>) {
+        let s = DiffSettings::default();
+        let mut orig = Vec::new();
+        let mut copy = Vec::new();
+        for i in 0..n {
+            let f = textured(320, 320, (i % 4) as u32);
+            // A blur is a loss of texture everywhere, not a patch somewhere.
+            let c = if i == at { blur(&f) } else { noisy(&f, 6) };
+            orig.push(OriginalGrid {
+                counter: i as u64 + 1,
+                t_us: i as i64 * 33_333,
+                grid: tile_stats(&f, &s),
+            });
+            copy.push(CopyGrid {
+                index: i as u64,
+                t_us: i as i64 * 33_333,
+                counter: Some(i as u64 + 1),
+                grid: tile_stats(&c, &s),
+            });
+        }
+        (orig, copy)
+    }
+
+    fn one_shot(n: usize) -> crate::declared::DeclaredCorrespondence {
+        let mut r = crate::declared::build_with(&[], &[], crate::declared::Tuning::default());
+        r.segments = vec![crate::declared::DeclaredSegment {
+            copy_start_us: 0,
+            copy_end_us: n as i64 * 33_333,
+            counter_start: 1,
+            counter_end: n as u64,
+            original_start_us: 0,
+            original_end_us: n as i64 * 33_333,
+            frames_examined: n,
+            frames_confirmed: n,
+            differing: vec![],
+            inconclusive: vec![],
+            worst_confirmed_distance: 2,
+        }];
+        r
+    }
+
+    #[test]
+    fn an_evenly_blurred_frame_is_caught_by_its_neighbours() {
+        let s = DiffSettings::default();
+        let (o, c) = shot_with_one_blurred(60, 30);
+        // The per-frame check cannot see it: the change is everywhere at once.
+        let alone = compare(&o[30].grid, &c[30].grid, &s);
+        assert_ne!(alone.state, DifferenceState::LocalizedDifference);
+        // Its neighbours can.
+        let found = out_of_place(&one_shot(60), &o, &c, &s);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].counter, 31);
+        assert!(found[0].deviations > s.frame_sensitivity);
+    }
+
+    #[test]
+    fn an_ordinary_recompression_puts_no_frame_out_of_place() {
+        // The case that must never fire: nothing was done to this copy.
+        let s = DiffSettings::default();
+        let mut orig = Vec::new();
+        let mut copy = Vec::new();
+        for i in 0..60usize {
+            let f = textured(320, 320, (i % 4) as u32);
+            orig.push(OriginalGrid {
+                counter: i as u64 + 1,
+                t_us: i as i64 * 33_333,
+                grid: tile_stats(&f, &s),
+            });
+            copy.push(CopyGrid {
+                index: i as u64,
+                t_us: i as i64 * 33_333,
+                counter: Some(i as u64 + 1),
+                grid: tile_stats(&noisy(&f, 20), &s),
+            });
+        }
+        assert!(out_of_place(&one_shot(60), &orig, &copy, &s).is_empty());
+    }
+
+    #[test]
+    fn a_lone_frame_and_a_burst_are_told_apart() {
+        // The two shapes measured on real files: one blurred frame alone at
+        // 10 s, and three frames inside 0.13 s at the very start, which is
+        // x264's rate control settling rather than anything done to the film.
+        let mk = |t: i64, dev: f32| OutOfPlace {
+            copy_index: (t / 33_333) as u64,
+            copy_t_us: t,
+            original_t_us: t,
+            counter: (t / 33_333) as u64 + 1,
+            baseline: 40.0,
+            shot_baseline: 2.0,
+            deviations: dev,
+        };
+        let runs = out_of_place_runs(&[
+            mk(670_000, 26.0),
+            mk(770_000, 16.0),
+            mk(800_000, 15.3),
+            mk(10_000_000, 26.7),
+        ]);
+        assert_eq!(runs.len(), 2, "{runs:?}");
+        // The lone frame comes first, whatever its peak.
+        assert!(runs[0].is_single_frame());
+        assert_eq!(runs[0].first_counter, 301);
+        assert!(!runs[0].at_file_start);
+        assert_eq!(runs[1].frames, 3);
+        assert!(runs[1].at_file_start, "the burst is in the opening second");
+        assert_eq!(runs[1].duration_us(), 130_000);
+    }
+
+    #[test]
+    fn a_shot_too_short_to_have_a_habit_is_left_alone() {
+        let s = DiffSettings::default();
+        let (o, c) = shot_with_one_blurred(8, 4);
+        assert!(out_of_place(&one_shot(8), &o, &c, &s).is_empty());
     }
 
     #[test]

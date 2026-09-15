@@ -117,14 +117,14 @@ async function scan(which, buffer, track, onProgress) {
 /// Saying so is the honest thing; re-implementing it in JavaScript would be a
 /// second implementation of the one thing that must have exactly one.
 export async function compare({ originalFile, copyFile, shortId, chainVerdict, chainPassed,
-                                sensitivity, grid, onProgress }) {
+                                sensitivity, grid, frameSensitivity, onProgress }) {
   const originalBuffer = await originalFile.arrayBuffer();
   const originalTrack = demux(originalBuffer);
 
   wasm.er_reset(originalTrack.width, originalTrack.height);
   // Before the first frame: the grids are built as frames arrive, so changing
   // the geometry afterwards would compare two different griddings.
-  wasm.er_set_diff(sensitivity || 0, grid || 0);
+  wasm.er_set_diff(sensitivity || 0, grid || 0, frameSensitivity || 0);
   setText(0, shortId || '');
   // No default sentence: with `chain_checked` false the report explains in
   // its own words what was not checked and what to run. A placeholder here

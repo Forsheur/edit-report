@@ -13,7 +13,7 @@
 //! established" where it has nothing — never "falsification".
 
 use crate::declared::{DeclaredCorrespondence, DeclaredSegment, FrameNote, JoinKind, NoteReason};
-use crate::imagediff::{self, DiffSettings, DifferenceState, Located};
+use crate::imagediff::{self, DiffSettings, DifferenceState, Located, OutOfPlace};
 
 fn esc(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -103,6 +103,10 @@ pub struct PageInputs<'a> {
     pub diff: DiffSettings,
     /// Whether the localised comparison ran at all.
     pub located_ran: bool,
+    /// Frames whose difference from the original is unusual for their own
+    /// shot. The only signal here that sees a change spread evenly over a
+    /// whole frame; every other one reads that as recompression.
+    pub out_of_place: &'a [OutOfPlace],
 }
 
 /// The whole thing as a standalone document, for the native binary.
@@ -182,7 +186,8 @@ pub fn fragment(r: &DeclaredCorrespondence, inputs: &PageInputs) -> String {
     h.push_str(&format!(
         "<figure><figcaption>Original — {}</figcaption>\
          <video id=\"vo\" controls preload=\"metadata\" src=\"{}\"></video>\
-         <label class=\"repick\">Load a file<input type=\"file\" accept=\"video/*\" data-for=\"vo\"></label>\
+         <p class=\"fcount\"><span id=\"fo\">—</span> \
+         <label class=\"repick\">Load a file<input type=\"file\" accept=\"video/*\" data-for=\"vo\"></label></p>\
          </figure>\n",
         esc(inputs.original_label),
         esc(inputs.original_src)
@@ -190,7 +195,8 @@ pub fn fragment(r: &DeclaredCorrespondence, inputs: &PageInputs) -> String {
     h.push_str(&format!(
         "<figure><figcaption>Supplied file — {}</figcaption>\
          <video id=\"vc\" controls preload=\"metadata\" src=\"{}\"></video>\
-         <label class=\"repick\">Load a file<input type=\"file\" accept=\"video/*\" data-for=\"vc\"></label>\
+         <p class=\"fcount\"><span id=\"fc\">—</span> \
+         <label class=\"repick\">Load a file<input type=\"file\" accept=\"video/*\" data-for=\"vc\"></label></p>\
          </figure>\n",
         esc(inputs.copy_label),
         esc(inputs.copy_src)
@@ -198,6 +204,9 @@ pub fn fragment(r: &DeclaredCorrespondence, inputs: &PageInputs) -> String {
     h.push_str(
         "</div>\n<p class=\"linkbar\"><label><input type=\"checkbox\" id=\"link\" checked> \
          Keep the two players together</label> \
+         <span class=\"step\"><button type=\"button\" id=\"prevf\" title=\"previous frame\">\
+         ◀ frame</button><button type=\"button\" id=\"nextf\" title=\"next frame\">frame ▶\
+         </button></span> \
          <span id=\"linkstate\" class=\"note\"></span></p>\n",
     );
     h.push_str("</section>\n");
@@ -344,7 +353,7 @@ pub fn fragment(r: &DeclaredCorrespondence, inputs: &PageInputs) -> String {
     let total_differing: usize = r.segments.iter().map(|s| s.differing.len()).sum();
     if total_differing == 0 {
         h.push_str(
-            "<p>None, among the frames that could be judged. See section 7 for the frames \
+            "<p>None, among the frames that could be judged. See section 8 for the frames \
              that could not.</p>\n",
         );
     } else {
@@ -369,9 +378,14 @@ pub fn fragment(r: &DeclaredCorrespondence, inputs: &PageInputs) -> String {
     h.push_str(&located_section(inputs));
     h.push_str("</section>\n");
 
+    // ── Frames that do not sit with their neighbours ─────────────────────
+    h.push_str("<section><h2>7 · Frames that do not sit with their neighbours</h2>\n");
+    h.push_str(&out_of_place_section(inputs));
+    h.push_str("</section>\n");
+
     // ── Inconclusive ─────────────────────────────────────────────────────
     let total_inconclusive: usize = r.segments.iter().map(|s| s.inconclusive.len()).sum();
-    h.push_str("<section><h2>7 · Frames nothing could be established about</h2>\n");
+    h.push_str("<section><h2>8 · Frames nothing could be established about</h2>\n");
     h.push_str(&format!(
         "<p>{} frame(s). These are not evidence of anything, in either direction. \
          A frame is here because its strip could not be read — too compressed, too \
@@ -415,12 +429,19 @@ fn shot_map(r: &DeclaredCorrespondence) -> String {
         if i > 0 {
             out.push(',');
         }
+        // The counters at each end come too: they are what lets the page put
+        // a frame NUMBER under each player. A reader who cannot tell frame
+        // 301 from 302 on screen cannot confirm they are looking at the frame
+        // the report named, and "close but not on it" is then an impression
+        // nobody can settle.
         out.push_str(&format!(
-            "{{\"c0\":{},\"c1\":{},\"o0\":{},\"o1\":{}}}",
+            "{{\"c0\":{},\"c1\":{},\"o0\":{},\"o1\":{},\"k0\":{},\"k1\":{}}}",
             secs(s.copy_start_us),
             secs(s.copy_end_us),
             secs(s.original_start_us),
-            secs(s.original_end_us)
+            secs(s.original_end_us),
+            s.counter_start,
+            s.counter_end
         ));
     }
     out.push_str("]</script>\n");
@@ -559,6 +580,91 @@ fn located_section(inputs: &PageInputs) -> String {
 /// no-match read almost the same, and a reader could not see that a check had
 /// happened at all. A check nobody notices succeeding is a check nobody will
 /// think about when it fails.
+/// Section 7: a frame that departs from the original far more than the frames
+/// around it do.
+///
+/// Everything else here compares a frame with the original's frame of the same
+/// number and asks whether the difference is spread out or concentrated. A
+/// frame that was blurred, graded, re-rendered or swapped in from another
+/// source differs EVENLY, so it reads as recompression and vanishes into the
+/// conforming count. This asks the question none of the others do: is that
+/// much difference normal for this film?
+fn out_of_place_section(inputs: &PageInputs) -> String {
+    if !inputs.located_ran {
+        return "<p>Not performed in this run.</p>\n".to_string();
+    }
+    let runs = imagediff::out_of_place_runs(inputs.out_of_place);
+    let mut out = String::new();
+
+    if runs.is_empty() {
+        out.push_str(
+            "<p>None. Every frame departs from the original by about as much as the frames \
+             around it do.</p>\n",
+        );
+    } else {
+        out.push_str(
+            "<p>These depart from the original far more than their neighbours in the same \
+             shot. That is a measurement, not a conclusion — go and look at them, the \
+             players are already lined up. <strong>The shape matters as much as the \
+             count</strong>: an encoder cannot degrade one frame and spare its neighbours, \
+             its rate control settles over a run and usually at the start of a file, while \
+             a frame that was blurred, graded or swapped in is a single-frame event.</p>\n\
+             <ul class=\"frames\">\n",
+        );
+        for t in runs.iter().take(60) {
+            let what = if t.is_single_frame() {
+                format!(
+                    "<strong>one frame, alone</strong> · frame {}",
+                    t.first_counter
+                )
+            } else {
+                format!(
+                    "<strong>{} frames over {}</strong> · frames {}–{}{}",
+                    t.frames,
+                    esc(&duration(t.duration_us())),
+                    t.first_counter,
+                    t.last_counter,
+                    if t.at_file_start {
+                        ", in the opening second of the file"
+                    } else {
+                        ""
+                    }
+                )
+            };
+            out.push_str(&format!(
+                "<li>{} · {} · differs by {:.0} at its peak where the shot differs by {:.0} \
+                 · {:.0}× the shot's own spread</li>\n",
+                at(
+                    t.first_copy_t_us,
+                    Some(t.original_t_us),
+                    &clock(t.first_copy_t_us)
+                ),
+                what,
+                t.peak_baseline,
+                t.shot_baseline,
+                t.peak_deviations
+            ));
+        }
+        out.push_str("</ul>\n");
+        if runs.len() > 60 {
+            out.push_str("<p class=\"note\">Only the first 60 are listed.</p>\n");
+        }
+    }
+
+    out.push_str(&format!(
+        "<p class=\"note\">Judged against each shot's own spread at sensitivity {:.0}, so a \
+         heavily recompressed film raises its own bar and there is no published constant to \
+         tune against. Nothing is dropped by the grouping: a blurred passage is a run too, \
+         and a real finding. Two things this cannot see. A change applied to the WHOLE film \
+         — if every frame is blurred, every frame's neighbours are blurred too and nothing \
+         stands out. And a shot filmed with too little texture to measure: the frames of a \
+         wall, a sky or a table are set aside before this runs, and a change inside them is \
+         set aside with them.</p>\n",
+        inputs.diff.frame_sensitivity
+    ));
+    out
+}
+
 fn signature_block(r: &DeclaredCorrespondence) -> String {
     let total: usize = r.tags_seen.iter().map(|(_, n)| *n).sum();
     match (r.tag_expected, r.tags_seen.as_slice()) {
@@ -706,7 +812,7 @@ fn limits(r: &DeclaredCorrespondence, inputs: &PageInputs) -> String {
         0.0
     };
     format!(
-        "<section><h2>8 · What this report cannot say</h2>\n<ul class=\"limits\">\n\
+        "<section><h2>9 · What this report cannot say</h2>\n<ul class=\"limits\">\n\
          <li>{} frames were read, {:.1} per second of the supplied file. Nothing is claimed \
          about a moment that was not read.</li>\n\
          <li>The picture comparison uses a 63-bit fingerprint of each frame's coarse \
@@ -754,7 +860,13 @@ pre { background:rgba(127,127,127,.12); padding:8px 10px; border-radius:4px;
            align-items:baseline; flex-wrap:wrap; min-height:2.6em; }
 .linkbar label { white-space:nowrap; }
 .players figure.adrift video { outline:2px solid var(--bad); outline-offset:-2px; }
-.repick { display:inline-block; font-size:12px; color:var(--dim); margin-top:4px; cursor:pointer; }
+.fcount { margin:4px 0 0; font-size:12px; color:var(--dim); display:flex; gap:12px;
+          align-items:baseline; font-variant-numeric:tabular-nums; }
+.fcount span { font-weight:600; color:inherit; }
+.step button { font:inherit; font-size:12px; padding:2px 8px; cursor:pointer; }
+.step button:first-child { border-radius:4px 0 0 4px; }
+.step button:last-child { border-radius:0 4px 4px 0; margin-left:-1px; }
+.repick { display:inline-block; font-size:12px; color:var(--dim); cursor:pointer; }
 .repick input { display:none; }
 table { border-collapse:collapse; width:100%; font-size:14px; }
 th, td { text-align:left; padding:5px 8px; border-bottom:1px solid var(--line); white-space:nowrap; }
@@ -788,29 +900,73 @@ window.editReportLink = function () {
   var shots = [];
   try { shots = JSON.parse(document.getElementById('shots').textContent) || []; } catch (e) {}
 
-  // Map a moment from one file to the other, through the shot it falls in.
+  // Map a moment from one file to the other, THROUGH THE FRAME NUMBER.
   //
-  // Inside a shot, by interpolation: the two run at the same rate there, and a
-  // shot of a re-encoded copy is not always exactly as long as the original's,
-  // so mapping the ends and interpolating between them beats adding a fixed
-  // offset — the offset is not constant, that is what a cut IS.
+  // There used to be a second route: interpolate the time directly between a
+  // shot's endpoints. It looked equivalent and was not. The frame readout and
+  // the step buttons went through the counter, the follow went through time,
+  // and nothing made the two agree — drag the original's thumb to frame 1 and
+  // the copy landed on frame 3.
   //
-  // Outside every shot there is NO answer: material inserted into the copy has
-  // no counterpart in the original, and material cut out of the copy has none
-  // the other way. Returning null rather than the nearest thing is the point;
-  // a player showing an unrelated frame beside a claim is worse than one that
-  // has stopped.
-  function map(t, from, to) {
+  // Going through the counter makes agreement structural rather than likely:
+  // the other player is asked for the frame the driver is on, by number, and
+  // `timeOfCounter` aims at the middle of that frame's interval so no
+  // rounding can put it on a neighbour. Outside every shot there is no
+  // counter, hence no answer — which is correct, and is how inserted material
+  // and removed material hold the other player still.
+
+  // How long one frame lasts on a side. Derived from the shots rather than
+  // assumed: a shot's span divided by the counters it covers IS the frame
+  // period, and it stays right when the two files run at different rates.
+  function periodOf(side) {
+    var best = null;
+    for (var i = 0; i < shots.length; i++) {
+      var s = shots[i], n = s.k1 - s.k0;
+      if (n > 0) {
+        var p = (s[side + '1'] - s[side + '0']) / n;
+        if (p > 0.0005 && (best === null || n > best.n)) best = { p: p, n: n };
+      }
+    }
+    return best ? best.p : 1 / 30;
+  }
+
+  // The frame number at a moment. Floor, not round, and that is not a detail:
+  // `timeOfCounter` aims at the middle of a frame, so rounding here would send
+  // the middle of frame k back as k+1 and the two conversions would disagree
+  // by half a frame. They did — stepping went 180, 181, 183, 184, 186.
+  function counterAt(t, side) {
+    var slack = periodOf(side);
     for (var i = 0; i < shots.length; i++) {
       var s = shots[i];
-      var a0 = s[from + '0'], a1 = s[from + '1'];
-      var b0 = s[to + '0'], b1 = s[to + '1'];
-      if (t >= a0 - 0.02 && t <= a1 + 0.02) {
+      var a0 = s[side + '0'], a1 = s[side + '1'];
+      if (t >= a0 - slack && t <= a1 + slack) {
         var span = a1 - a0;
-        return b0 + (b1 - b0) * (span > 0.001 ? (t - a0) / span : 0);
+        if (span <= 0.001) return s.k0;
+        var k = Math.floor(s.k0 + (s.k1 - s.k0) * ((t - a0) / span) + 1e-6);
+        return Math.min(s.k1, Math.max(s.k0, k));
       }
     }
     return null;
+  }
+
+  // Where a frame number sits on a side, aimed at the middle of its interval.
+  function timeOfCounter(k, side) {
+    for (var i = 0; i < shots.length; i++) {
+      var s = shots[i];
+      if (k >= s.k0 && k <= s.k1) {
+        var n = s.k1 - s.k0;
+        var a0 = s[side + '0'], a1 = s[side + '1'];
+        var t = n > 0 ? a0 + (a1 - a0) * ((k - s.k0) / n) : a0;
+        return Math.max(0, t + periodOf(side) / 2);
+      }
+    }
+    return null;
+  }
+
+  // The one mapping. Everything that moves a player goes through it.
+  function otherTime(t, side) {
+    var k = counterAt(t, side);
+    return k === null ? null : timeOfCounter(k, side === 'c' ? 'o' : 'c');
   }
 
   // Both directions. Neither player is "the" driver: on screen they are two
@@ -829,27 +985,52 @@ window.editReportLink = function () {
   //
   // So the echo is identified by its VALUE, not by when it arrives: we record
   // what we asked for, and the matching event is consumed once.
-  var echo = { o: { seek: null, play: null }, c: { seek: null, play: null } };
+  // A LIST of outstanding values, not one.
+  //
+  // A single slot was enough while every move came one at a time. Dragging a
+  // thumb does not: the browser fires `timeupdate` throughout the drag and
+  // `seeked` at the end, so two driven seeks can be in flight at once. The
+  // second overwrote the first, the first echo consumed the slot, and the
+  // second echo then arrived unclaimed — read as the reader moving that
+  // player. The link reversed direction and dragged the other one to match a
+  // position it had itself produced, landing a few frames out. Intermittently,
+  // because it depends on which event wins the race.
+  var echo = { o: { seek: [], play: [] }, c: { seek: [], play: [] } };
   function slot(v) { return v === vc ? echo.c : echo.o; }
 
   function driveTime(target, t) {
-    slot(target).seek = t;
+    // Arm nothing when the player is already there: no event will be fired,
+    // and an armed value nobody claims swallows the reader's next move.
+    if (Math.abs(target.currentTime - t) < 0.001) return;
+    slot(target).seek.push(t);
     try { target.currentTime = t; } catch (e) {}
   }
   function drivePlay(target, playing) {
-    slot(target).play = playing;
+    if (target.paused === !playing) return;   // nothing will fire
+    slot(target).play.push(playing);
     if (playing) { target.play().catch(function () {}); } else { target.pause(); }
   }
   function isEcho(v, kind, value) {
     var s = slot(v);
     if (kind === 'seek') {
-      var mine = s.seek !== null && Math.abs(v.currentTime - s.seek) < 0.08;
-      s.seek = null;
-      return mine;
+      // Any outstanding value may be the one that just landed, and only that
+      // one is consumed. Values older than it are dropped with it: the player
+      // has moved past them, so nothing will ever claim them.
+      for (var i = 0; i < s.seek.length; i++) {
+        if (Math.abs(v.currentTime - s.seek[i]) < 0.08) {
+          s.seek.splice(0, i + 1);
+          return true;
+        }
+      }
+      return false;
     }
-    var want = s.play;
-    s.play = null;
-    return want !== null && want === value;
+    for (var j = 0; j < s.play.length; j++) {
+      if (s.play[j] === value) {
+        s.play.splice(0, j + 1);
+        return true;
+      }
+    }
+    return false;
   }
 
   // Which player the reader last touched. Only that one corrects the other
@@ -869,7 +1050,7 @@ window.editReportLink = function () {
   function follow(v, force) {
     if (!linked()) return;
     var other = v === vc ? vo : vc;
-    var t = map(v.currentTime, v === vc ? 'c' : 'o', v === vc ? 'o' : 'c');
+    var t = otherTime(v.currentTime, v === vc ? 'c' : 'o');
     if (t === null) {
       if (!other.paused) drivePlay(other, false);
       setAdrift(other, true);
@@ -887,6 +1068,7 @@ window.editReportLink = function () {
     v.addEventListener('seeked', function () {
       if (isEcho(v, 'seek')) return;
       driver = v;
+      atCounter = null;   // the reader moved it themselves
       follow(v, true);
     });
 
@@ -901,10 +1083,11 @@ window.editReportLink = function () {
     v.addEventListener('play', function () {
       if (isEcho(v, 'play', true)) return;
       driver = v;
+      atCounter = null;
       if (!linked()) return;
       // Only if the other side has somewhere to be. Starting a player with no
       // counterpart would walk it away from the moment being compared.
-      if (map(v.currentTime, v === vc ? 'c' : 'o', v === vc ? 'o' : 'c') !== null) {
+      if (otherTime(v.currentTime, v === vc ? 'c' : 'o') !== null) {
         drivePlay(other, true);
       }
     });
@@ -938,6 +1121,85 @@ window.editReportLink = function () {
     });
   }
 
+  // ── Which frame am I looking at ─────────────────────────────────────────
+  //
+  // Two frames a thirtieth of a second apart look the same, so a reader who
+  // clicks a report line has no way to confirm they landed on the frame it
+  // named, and no way to check the neighbour. The readout answers the first,
+  // the step buttons the second — both through `counterAt` above, the same
+  // conversion the players themselves use, so what is displayed cannot
+  // disagree with what is aligned.
+
+  function showFrame(v, el) {
+    if (!el) return;
+    var side = v === vc ? 'c' : 'o';
+    var k = counterAt(v.currentTime, side);
+    el.textContent = k === null
+      ? 'f=? · ' + v.currentTime.toFixed(2) + 's'
+      : 'f=' + k + ' · ' + v.currentTime.toFixed(2) + 's';
+  }
+  function watchFrames(v, el) {
+    if (v.requestVideoFrameCallback) {
+      var tick = function () {
+        showFrame(v, el);
+        v.requestVideoFrameCallback(tick);
+      };
+      v.requestVideoFrameCallback(tick);
+    }
+    // `seeked` and `timeupdate` cover the browsers without rVFC, and the
+    // paused case where no frame is painted.
+    v.addEventListener('seeked', function () { showFrame(v, el); });
+    v.addEventListener('timeupdate', function () { showFrame(v, el); });
+    showFrame(v, el);
+  }
+  watchFrames(vo, document.getElementById('fo'));
+  watchFrames(vc, document.getElementById('fc'));
+
+  // One frame at a time, both together. Native controls have no such thing,
+  // and stepping is what turns "I think it is that one" into "it is that one,
+  // and here is the one before".
+  //
+  // Stepped by frame NUMBER, not by time. Adding a frame's duration to each
+  // player's clock and re-projecting one onto the other looked equivalent and
+  // was not: both the addition and the projection round, the errors add up,
+  // and after a few steps the pair sat one or two frames apart. An integer
+  // cannot drift — so the counter moves by one and each side is told where
+  // that counter lives.
+  // The frame the last step aimed at. Kept because re-deriving it from the
+  // clock at every click compounds each conversion's rounding; an integer
+  // carried forward cannot.
+  var atCounter = null;
+
+  function step(dir) {
+    // Before the reader has touched either, step from the supplied file —
+    // the one the report is about.
+    var v = driver === vo ? vo : vc;
+    var side = v === vc ? 'c' : 'o';
+    drivePlay(vc, false);
+    drivePlay(vo, false);
+
+    var k = atCounter !== null ? atCounter : counterAt(v.currentTime, side);
+    var tc = k === null ? null : timeOfCounter(k + dir, 'c');
+    var to = k === null ? null : timeOfCounter(k + dir, 'o');
+    if (tc === null || to === null) {
+      // Outside any shot there is no counter to step: move the player the
+      // reader is driving and let the other hold, as everywhere else.
+      atCounter = null;
+      driveTime(v, Math.max(0, v.currentTime + dir * periodOf(side)));
+      setTimeout(function () { follow(v, true); }, 0);
+      return;
+    }
+    atCounter = k + dir;
+    driveTime(vc, Math.max(0, tc));
+    driveTime(vo, Math.max(0, to));
+    setAdrift(vo, false);
+    setAdrift(vc, false);
+  }
+  var prevf = document.getElementById('prevf');
+  var nextf = document.getElementById('nextf');
+  if (prevf) prevf.addEventListener('click', function () { step(-1); });
+  if (nextf) nextf.addEventListener('click', function () { step(1); });
+
   // Seek, then pause: the point is to compare two still frames, and a player
   // that keeps rolling has moved off the frame by the time you look at it.
   function seek(v, t) {
@@ -960,6 +1222,7 @@ window.editReportLink = function () {
       setAdrift(vo, true);
     }
     driver = vc;
+    atCounter = null;
     (vo || vc).scrollIntoView({ block: 'start', behavior: 'smooth' });
   });
 
@@ -1047,6 +1310,7 @@ mod tests {
             located: &[],
             diff: DiffSettings::default(),
             located_ran: false,
+            out_of_place: &[],
         }
     }
 
@@ -1127,9 +1391,14 @@ mod tests {
         let h = render(&base(), &inputs());
         assert!(h.contains("wire(vc);"), "{h}");
         assert!(h.contains("wire(vo);"), "the original must drive too");
+        // One conversion, through the frame number. A second route that
+        // interpolated time directly used to exist beside it, and nothing
+        // made the two agree: dragging the original to frame 1 put the copy
+        // on frame 3.
+        assert!(h.contains("function otherTime(t, side)"), "{h}");
         assert!(
-            h.contains("function map(t, from, to)"),
-            "mapping must work both ways"
+            !h.contains("function map(t, from, to)"),
+            "the time-interpolating route is back, and it cannot agree"
         );
     }
 
@@ -1257,13 +1526,10 @@ mod tests {
         });
         let h = render(&r, &inputs());
         assert!(
-            h.contains(r#"{"c0":0.000,"c1":7.730,"o0":0.000,"o1":7.730}"#),
+            h.contains(r#"{"c0":0.000,"c1":7.730,"o0":0.000,"o1":7.730,"k0":1,"k1":233}"#),
             "{h}"
         );
-        assert!(
-            h.contains(r#"{"c0":8.000,"c1":13.730,"o0":14.000,"o1":19.730}"#),
-            "{h}"
-        );
+        assert!(h.contains(r#"{"c0":8.000,"c1":13.730,"o0":14.000,"o1":19.730,"k0":421,"k1":593}"#));
         assert!(h.contains("id=\"link\""));
     }
 
@@ -1350,12 +1616,21 @@ mod tests {
         let h = render(&base(), &inputs());
         assert!(h.contains("function isEcho(v, kind, value)"), "{h}");
         assert!(
-            h.contains("slot(target).seek = t;"),
+            h.contains("slot(target).seek.push(t);"),
             "a driven seek must be recorded"
         );
         assert!(
-            h.contains("slot(target).play = playing;"),
+            h.contains("slot(target).play.push(playing);"),
             "a driven play must be recorded"
+        );
+        // A LIST, not one value: dragging a thumb puts two driven seeks in
+        // flight at once, the second overwrote the first, and the unclaimed
+        // echo was read as the reader moving that player — which reversed the
+        // link and left the pair a few frames out.
+        assert!(h.contains("echo = { o: { seek: [], play: [] }"), "{h}");
+        assert!(
+            h.contains("if (Math.abs(target.currentTime - t) < 0.001) return;"),
+            "arming a move that will not happen swallows the reader's next one"
         );
         assert!(
             !h.contains("applying"),
@@ -1384,6 +1659,34 @@ mod tests {
             h.contains("min-height:2.6em"),
             "the bar must reserve its space"
         );
+    }
+
+    #[test]
+    fn the_reader_can_name_and_step_the_frame_they_are_on() {
+        // Two frames a thirtieth of a second apart look identical, so without
+        // a number a reader cannot confirm the click landed where the report
+        // said — and cannot move one frame to check the neighbour.
+        let h = render(&base(), &inputs());
+        assert!(h.contains("id=\"fo\"") && h.contains("id=\"fc\""), "{h}");
+        assert!(h.contains("function counterAt(t, side)"));
+        assert!(h.contains("id=\"prevf\"") && h.contains("id=\"nextf\""));
+        // Stepped by counter, never by adding a duration to each clock: both
+        // the addition and the projection round, and the pair drifted one to
+        // two frames apart after a few steps.
+        assert!(h.contains("function timeOfCounter(k, side)"));
+        assert!(h.contains("counterAt(v.currentTime, side)"));
+        // The readout and the alignment must share one conversion, or what a
+        // reader is shown can differ from what the players were told.
+        assert!(h.contains("var t = otherTime(v.currentTime,"));
+        // The period is derived from the shots, not assumed, so it is right
+        // even when the two files run at different rates.
+        assert!(h.contains("function periodOf(side)"));
+        // No clamping at the file's edges. A clamp was added once, to cover
+        // the copy starting two frames late — a symptom of the demuxer not
+        // applying the edit list, fixed in mp4.js where it belonged. Clamping
+        // here would let inserted material at the very start of a file read
+        // as corresponding, in the players, to frames it does not match.
+        assert!(!h.contains("return first.k0;"), "{h}");
     }
 
     #[test]

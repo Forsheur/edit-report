@@ -72,6 +72,19 @@
     <input type="range" id="grid" min="8" max="32" step="4" value="16">
     <output id="gridOut">16</output>
     <span class="dim"> × tiles</span></label>
+  <label class="row"><span>Frame vs its neighbours</span>
+    <input type="range" id="frameSens" min="2" max="30" step="0.5" value="8">
+    <output id="frameSensOut">8</output>
+    <span class="dim"> deviations</span></label>
+  <p class="caveat">
+    The last dial answers a different question from the first two: not
+    <em>where</em> inside a frame the difference sits, but whether a whole
+    frame differs more than the frames around it. A blur, a colour grade, a
+    re-render or a frame swapped in from another source changes everything at
+    once, so the first two read it as a recompression — measured, a frame that
+    had lost 85&nbsp;% of its detail was reported as conforming. Against its
+    own shot it came back at 26.7 deviations.
+  </p>
   <p class="caveat">
     A region is located when it stands out from <em>that frame's own</em>
     spread by more than this many median-absolute-deviations. There is no
@@ -129,7 +142,8 @@ function refresh() {
 }
 $('original').addEventListener('change', refresh);
 $('copy').addEventListener('change', refresh);
-for (const [range, out] of [['sensitivity', 'sensOut'], ['grid', 'gridOut']]) {
+for (const [range, out] of [['sensitivity', 'sensOut'], ['grid', 'gridOut'],
+                            ['frameSens', 'frameSensOut']]) {
   $(range).addEventListener('input', () => { $(out).value = $(range).value; });
 }
 
@@ -148,6 +162,7 @@ $('go').addEventListener('click', async () => {
       shortId: $('shortId').value.trim(),
       sensitivity: parseFloat($('sensitivity').value),
       grid: parseInt($('grid').value, 10),
+      frameSensitivity: parseFloat($('frameSens').value),
       onProgress: (which, done, total) => {
         $('progress').textContent = `${which}: ${done} / ${total} frames`;
       },

@@ -264,7 +264,34 @@ export function demux(buffer) {
     const stsd = child(view, stbl[0], stbl[1], 'stsd');
     const entry = stsd ? videoSampleEntry(view, stsd) : null;
     if (!entry) return;
-    track = { trackId, timescale, ...entry, stbl };
+    // The edit list, which this demuxer ignored and the player does not.
+    //
+    // An x264 re-encode uses B-frames, so the first frame's composition time
+    // is two frames after its decode time, and ffmpeg writes an `elst` whose
+    // media_time says "present from here" — the <video> element and ffprobe
+    // both start that file at 0.000, while the raw sample timestamps start at
+    // 0.067. Every timestamp in the report was in raw time, every player
+    // position in edit-list time, and the copy sat two frames off the
+    // original in the browser while the native build (ffmpeg applies edit
+    // lists) was fine. Three fixes to the linking code made the map agree
+    // with itself and never with the picture.
+    //
+    // Only the common shape is handled: one entry, media_time ≥ 0. An empty
+    // edit (media_time −1, a leading delay) is not something the encoders we
+    // see produce, and guessing at it would be a new way to be wrong.
+    let presentationOffset = 0;
+    const elst = descend(view, s, e, ['edts', 'elst']);
+    if (elst) {
+      const ver = view.getUint8(elst[0]);
+      const n = u32(view, elst[0] + 4);
+      if (n > 0) {
+        const mt = ver === 1
+          ? Number(view.getBigInt64(elst[0] + 8 + 8))
+          : view.getInt32(elst[0] + 8 + 4);
+        if (mt > 0) presentationOffset = mt;
+      }
+    }
+    track = { trackId, timescale, presentationOffset, ...entry, stbl };
   });
   if (!track) throw new Error('no video track with a codec this build understands');
 
@@ -284,6 +311,16 @@ export function demux(buffer) {
     samples = fragmentedSamples(view, track.trackId, track.timescale, defaults);
   }
   if (samples.length === 0) throw new Error('the video track carries no samples this build could locate');
+
+  // Into presentation time. media_time is in the MEDIA timescale, like the
+  // sample timestamps, so the subtraction is exact. A frame the edit trims
+  // (composition time before media_time) goes negative and is never shown;
+  // the encoders we see put the first frame exactly at media_time, so in
+  // practice the first frame lands on 0 and nothing goes negative.
+  if (track.presentationOffset > 0) {
+    const offsetUs = Math.round((track.presentationOffset / track.timescale) * MICROS);
+    for (const s of samples) s.timestamp -= offsetUs;
+  }
 
   return {
     codec: track.codec,

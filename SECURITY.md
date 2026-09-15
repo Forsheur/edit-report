@@ -91,16 +91,30 @@ attack would have to guess, and half its guesses would be accusations.
 
 **Or change one frame.** A single substituted frame in an otherwise identical
 copy is the sharpest version of this attack. It is a fixture in the test set,
-and it shows up as exactly one frame failing to match. Measured on a real
-recording with one frame blurred: the report puts that frame in **inconclusive**
-— 22 of 63 bits apart, too far to confirm and not far enough to call a
-different picture — names its timestamp, and the two players let a reader look
-at it beside the original. That is the honest outcome for a single frame, and
-it is a pointer rather than a verdict.
+and it is the case that taught us the most.
 
-Milestone 3 will not always add to it. A change that moves the whole frame
-evenly — a blur, a grade, a re-render — is by construction not localised, and
-the localised pass says so rather than inventing a rectangle.
+**A frame changed evenly is invisible to every per-frame check.** Measured on a
+real recording with one frame blurred: it lost 85 % of its texture, and the
+report called it conforming alongside 561 others. The 63-bit fingerprint
+thresholds DCT coefficients at their median, so a uniform blur scales them all
+down while preserving their order — barely a bit flips. And the localised
+comparison correctly answered the question it was asked: the difference is
+spread evenly, which is what a recompression looks like.
+
+What none of them asked is whether that much difference is normal for this
+film. Its neighbours differed from the original by 3.6 and 6.0 grey levels; it
+differed by 19.7. Section 7 of the report asks that question now, per shot and
+against the shot's own spread: the frame came back at 26.7 deviations where the
+bar is 8, and nothing fired on the faithful copy, the cut, the retouch, or the
+150 kbit/s and half-width recompressions.
+
+**Two things it still cannot see, and both are ways to hide.** A change applied
+to the whole film: blur every frame and every frame's neighbours are blurred
+too, so nothing stands out. And a shot with too little texture to measure — on
+a static indoor recording averaging 2.5 grey levels of gradient, the same
+blurred frame is invisible, because tiles that flat are set aside before the
+comparison runs and the change is set aside with them. Film something with
+detail in it and the check works; film a wall and it does not.
 
 ### Film something that looks the same for a long time
 

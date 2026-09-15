@@ -67,6 +67,13 @@ OPTIONS:
                            recompressed one raises its own bar.
     --diff-grid <N>        Tiles across the frame for that comparison
                            (default 16, so 16×16).
+    --frame-sensitivity <N>
+                           How far above ITS OWN SHOT a frame must differ
+                           before the report calls it out (default 8). This is
+                           the only check that sees a change spread evenly over
+                           a whole frame — a blur, a grade, a re-render, a
+                           frame swapped in from elsewhere — which every other
+                           one reads as recompression.
     --python <PATH>        Interpreter used to run the bundle's verify_bundle.py.
     --skip-crypto          Do not run the bundle's verifier. The report then
                            states that the chain was not established here.
@@ -168,6 +175,18 @@ fn parse_args() -> Result<Args, String> {
                 })?;
                 if !(diff.sensitivity.is_finite() && diff.sensitivity > 0.0) {
                     return Err("--sensitivity must be a positive number".into());
+                }
+            }
+            "--frame-sensitivity" => {
+                let v = it.next().ok_or("--frame-sensitivity needs a value")?;
+                diff.frame_sensitivity = v.to_string_lossy().parse().map_err(|_| {
+                    format!(
+                        "--frame-sensitivity wants a number, got {:?}",
+                        v.to_string_lossy()
+                    )
+                })?;
+                if !(diff.frame_sensitivity.is_finite() && diff.frame_sensitivity > 0.0) {
+                    return Err("--frame-sensitivity must be a positive number".into());
                 }
             }
             "--diff-grid" => {
@@ -504,6 +523,39 @@ fn edit_pass(
                 .filter(|l| l.difference.state == w)
                 .count()
         };
+        if !pass.out_of_place.is_empty() {
+            eprintln!(
+                "  frames not sitting with their neighbours: {}",
+                pass.out_of_place.len()
+            );
+            for t in edit_report_core::imagediff::out_of_place_runs(&pass.out_of_place)
+                .iter()
+                .take(6)
+            {
+                eprintln!(
+                    "    {} at {:.2}s — peak {:.0} vs {:.0} for the shot ({:.0} deviations){}",
+                    if t.is_single_frame() {
+                        format!("f={} alone", t.first_counter)
+                    } else {
+                        format!(
+                            "f={}..{} over {:.2}s",
+                            t.first_counter,
+                            t.last_counter,
+                            t.duration_us() as f64 / 1e6
+                        )
+                    },
+                    t.first_copy_t_us as f64 / 1e6,
+                    t.peak_baseline,
+                    t.shot_baseline,
+                    t.peak_deviations,
+                    if t.at_file_start {
+                        " [opening of the file]"
+                    } else {
+                        ""
+                    }
+                );
+            }
+        }
         eprintln!(
             "  picture compared on {} frame(s): {} even, {} located, {} inconclusive",
             pass.located.len(),
@@ -535,6 +587,7 @@ fn edit_pass(
             located: &pass.located,
             diff: pass.diff_settings,
             located_ran: true,
+            out_of_place: &pass.out_of_place,
         },
     );
     std::fs::write(out, page)?;

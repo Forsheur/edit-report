@@ -12,7 +12,7 @@ use crate::decode::{self, DecodeError};
 use edit_report_core::bitrow;
 use edit_report_core::declared::{self, Declared, DeclaredCorrespondence, OriginalFrame, Tuning};
 use edit_report_core::fingerprint::{fingerprint, Fingerprint};
-use edit_report_core::imagediff::{self, DiffSettings, Located, TileGrid};
+use edit_report_core::imagediff::{self, DiffSettings, Located, OutOfPlace, TileGrid};
 use edit_report_core::report::MediaProfile;
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -33,6 +33,10 @@ struct Row {
 /// What a pass over both files established, plus what it cost.
 pub struct Pass {
     pub correspondence: DeclaredCorrespondence,
+    /// Frames whose difference from the original is unusual for their own
+    /// shot — the only signal that sees a change spread evenly over a whole
+    /// frame, which every other one here reads as recompression.
+    pub out_of_place: Vec<OutOfPlace>,
     /// Frames whose picture was compared region by region, with the outcome.
     /// Only frames the fingerprint CONFIRMED are here: asking where two
     /// different pictures differ is not a question with an answer.
@@ -163,9 +167,11 @@ pub fn run(
         })
         .collect();
     let located = imagediff::locate(&correspondence, &ogrids, &cgrids, &diff);
+    let out_of_place = imagediff::out_of_place(&correspondence, &ogrids, &cgrids, &diff);
 
     Ok(Pass {
         correspondence,
+        out_of_place,
         located,
         diff_settings: diff,
         original_frames: orows.len(),
