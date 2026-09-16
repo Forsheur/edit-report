@@ -93,6 +93,8 @@ pub enum NoteReason {
     /// The question was put and the fingerprint did not settle it: too far to
     /// confirm, not far enough to call a different picture.
     TooFarToJudge,
+    /// The strip names another recording. Not compared to this one.
+    ForeignSignature,
 }
 
 /// How a single copy frame stands against the original.
@@ -110,6 +112,13 @@ pub enum FrameVerdict {
     DeclaredOutsideOriginal,
     /// No counter could be read from the picture.
     NoDeclaration,
+    /// The strip carries another recording's signature. Its counter is that
+    /// recording's and says nothing about this original, so nothing is put
+    /// to it: "frame 12 of recording B" is not a claim about recording A,
+    /// and comparing it as one produced the accusation-shaped "names a moment
+    /// of the original and does not look like it" for material that had
+    /// simply announced, in its own strip, where it came from.
+    Foreign,
 }
 
 /// Distance at or below which the picture is taken to confirm the declaration.
@@ -286,7 +295,7 @@ impl Tuning {
 }
 
 /// A stretch of copy that confirms nothing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct UnconfirmedStretch {
     pub copy_start_us: i64,
     pub copy_end_us: i64,
@@ -296,6 +305,11 @@ pub struct UnconfirmedStretch {
     /// How many declared a frame of the original and did not look like it.
     /// The sharpest signal available here — and still not an accusation.
     pub frames_contradicted: usize,
+    /// How many carry another recording's signature. Never compared to this
+    /// original: their strip already said where they came from.
+    pub frames_foreign: usize,
+    /// Those signatures, with how many frames carried each.
+    pub foreign_tags: Vec<(u16, usize)>,
 }
 
 /// Everything the declarations establish. No score, no verdict on the video.
@@ -390,7 +404,7 @@ pub fn verify(
     original: &[OriginalFrame],
     confirm_distance: u32,
 ) -> (Vec<FrameVerdict>, Vec<f32>) {
-    verify_with(copy, original, confirm_distance, DIFFER_DISTANCE)
+    verify_with(copy, original, confirm_distance, DIFFER_DISTANCE, None)
 }
 
 pub fn verify_with(
@@ -398,10 +412,20 @@ pub fn verify_with(
     original: &[OriginalFrame],
     confirm_distance: u32,
     differ_distance: u32,
+    expected_tag: Option<u16>,
 ) -> (Vec<FrameVerdict>, Vec<f32>) {
     let mut verdicts = Vec::with_capacity(copy.len());
     let mut distances = Vec::with_capacity(copy.len());
     for c in copy {
+        // Another recording's frame is not a claim about this one. Settled
+        // before the counter is even looked at.
+        if let (Some(want), Some(got)) = (expected_tag, c.tag) {
+            if got != want {
+                verdicts.push(FrameVerdict::Foreign);
+                distances.push(f32::NAN);
+                continue;
+            }
+        }
         let Some(counter) = c.counter else {
             verdicts.push(FrameVerdict::NoDeclaration);
             distances.push(f32::NAN);
@@ -488,6 +512,7 @@ pub fn build_with(
         original,
         confirm_distance,
         tuning.differ_distance.max(confirm_distance + 1),
+        tuning.expected_tag,
     );
 
     let frames_declaring = copy.iter().filter(|c| c.counter.is_some()).count();
@@ -596,6 +621,9 @@ pub fn build_with(
                     FrameVerdict::Unsettled => {
                         inconclusive.push(note(NoteReason::TooFarToJudge, d))
                     }
+                    FrameVerdict::Foreign => {
+                        differing.push(note(NoteReason::ForeignSignature, None))
+                    }
                     FrameVerdict::NoDeclaration => {
                         inconclusive.push(note(NoteReason::NoDeclaration, None))
                     }
@@ -640,7 +668,9 @@ pub fn build_with(
             // in lasts longer than one examined frame — at four a second, an
             // insertion has to be under a quarter of a second to show up as
             // one — so a lone contradiction is noise and is counted as such.
-            FrameVerdict::Contradicted | FrameVerdict::DeclaredOutsideOriginal => {
+            FrameVerdict::Contradicted
+            | FrameVerdict::DeclaredOutsideOriginal
+            | FrameVerdict::Foreign => {
                 if is_isolated(&verdicts, i) {
                     continue;
                 }
@@ -698,7 +728,9 @@ pub fn build_with(
             .filter(|i| {
                 matches!(
                     verdicts[*i],
-                    FrameVerdict::Contradicted | FrameVerdict::DeclaredOutsideOriginal
+                    FrameVerdict::Contradicted
+                        | FrameVerdict::DeclaredOutsideOriginal
+                        | FrameVerdict::Foreign
                 ) && is_isolated(&verdicts, *i)
             })
             .count(),
@@ -914,9 +946,15 @@ fn unconfirmed_between(
                     (if a_open { t > a } else { t >= a }) && (if b_open { t < b } else { t <= b })
                 })
                 .collect();
+            // Bounded by its OWN frames, not by the neighbouring shots' ends.
+            // `a` is the last confirmed frame of the shot before, so a reader
+            // who clicked the stretch's start landed on a genuine frame of
+            // the original — identical to it, naturally — and concluded the
+            // report was wrong. The first frame this stretch is actually
+            // about is the one after.
             UnconfirmedStretch {
-                copy_start_us: a,
-                copy_end_us: b,
+                copy_start_us: inside.first().map_or(a, |i| copy[*i].copy_t_us),
+                copy_end_us: inside.last().map_or(b, |i| copy[*i].copy_t_us),
                 frames_examined: inside.len(),
                 frames_declaring: inside
                     .iter()
@@ -926,6 +964,21 @@ fn unconfirmed_between(
                     .iter()
                     .filter(|i| verdicts[**i] == FrameVerdict::Contradicted)
                     .count(),
+                frames_foreign: inside
+                    .iter()
+                    .filter(|i| verdicts[**i] == FrameVerdict::Foreign)
+                    .count(),
+                foreign_tags: {
+                    let mut seen: std::collections::BTreeMap<u16, usize> = Default::default();
+                    for i in &inside {
+                        if verdicts[*i] == FrameVerdict::Foreign {
+                            if let Some(t) = copy[*i].tag {
+                                *seen.entry(t).or_default() += 1;
+                            }
+                        }
+                    }
+                    seen.into_iter().collect()
+                },
             }
         })
         // A join between two shots always leaves a sliver — one frame period
@@ -1143,6 +1196,59 @@ mod tests {
         assert_eq!(r.unconfirmed.len(), 1);
         assert_eq!(r.unconfirmed[0].frames_examined, 8);
         assert_eq!(r.unconfirmed[0].frames_declaring, 0);
+        // Bounded by its own first and last frame — 12·8 and 19·8 frame
+        // periods in — not by the shots either side. Bounded by the shots, a
+        // click on the stretch's start landed on the last GENUINE frame of
+        // the shot before, and the reader saw two identical pictures where
+        // the report had promised foreign ones.
+        assert_eq!(r.unconfirmed[0].copy_start_us, 12 * 8 * 33_333);
+        assert_eq!(r.unconfirmed[0].copy_end_us, 19 * 8 * 33_333);
+    }
+
+    #[test]
+    fn another_recordings_frames_are_foreign_not_contradicted() {
+        // Case 3 on a landscape seed: the inserted second keeps its own
+        // strip — recording B's signature and B's frame numbers 1..8. Put to
+        // recording A as "frames 1..8", they were "contradicted"; they are
+        // not claims about A at all.
+        let o = original(40);
+        let mut c = copy_from(&o, &(0..12).collect::<Vec<_>>(), &[]);
+        for j in 0..8u64 {
+            c.push(Declared {
+                copy_index: 96 + j * 8,
+                copy_t_us: (12 + j as i64) * 8 * 33_333,
+                counter: Some(j * 8 + 1), // B's own numbering, overlapping A's
+                tag: Some(0x66AF),
+                fp: fp(5_000 + j),
+            });
+        }
+        for (n, k) in (12..24usize).enumerate() {
+            c.push(Declared {
+                copy_index: 160 + n as u64 * 8,
+                copy_t_us: (20 + n as i64) * 8 * 33_333,
+                counter: Some(o[k].counter),
+                tag: Some(0x9A8B),
+                fp: o[k].fp,
+            });
+        }
+        let r = build_with(
+            &c,
+            &o,
+            Tuning {
+                expected_tag: Some(0x9A8B),
+                ..Tuning::default()
+            },
+        );
+        assert_eq!(r.segments.len(), 2, "{:#?}", r.segments);
+        assert_eq!(r.unconfirmed.len(), 1);
+        let u = &r.unconfirmed[0];
+        assert_eq!(u.frames_foreign, 8);
+        assert_eq!(
+            u.frames_contradicted, 0,
+            "foreign frames must not be contradicted"
+        );
+        assert_eq!(u.foreign_tags, vec![(0x66AF, 8)]);
+        assert_eq!(r.frames_contradicted, 0);
     }
 
     #[test]

@@ -187,6 +187,8 @@ pub fn fragment(r: &DeclaredCorrespondence, inputs: &PageInputs) -> String {
         "<figure><figcaption>Original — {}</figcaption>\
          <video id=\"vo\" controls preload=\"metadata\" src=\"{}\"></video>\
          <p class=\"fcount\"><span id=\"fo\">—</span> \
+         <span class=\"step\"><button type=\"button\" id=\"prevo\" title=\"previous frame of the original\">◀</button>\
+         <button type=\"button\" id=\"nexto\" title=\"next frame of the original\">▶</button></span> \
          <label class=\"repick\">Load a file<input type=\"file\" accept=\"video/*\" data-for=\"vo\"></label></p>\
          </figure>\n",
         esc(inputs.original_label),
@@ -196,6 +198,8 @@ pub fn fragment(r: &DeclaredCorrespondence, inputs: &PageInputs) -> String {
         "<figure><figcaption>Supplied file — {}</figcaption>\
          <video id=\"vc\" controls preload=\"metadata\" src=\"{}\"></video>\
          <p class=\"fcount\"><span id=\"fc\">—</span> \
+         <span class=\"step\"><button type=\"button\" id=\"prevc\" title=\"previous frame of the supplied file\">◀</button>\
+         <button type=\"button\" id=\"nextc\" title=\"next frame of the supplied file\">▶</button></span> \
          <label class=\"repick\">Load a file<input type=\"file\" accept=\"video/*\" data-for=\"vc\"></label></p>\
          </figure>\n",
         esc(inputs.copy_label),
@@ -204,9 +208,6 @@ pub fn fragment(r: &DeclaredCorrespondence, inputs: &PageInputs) -> String {
     h.push_str(
         "</div>\n<p class=\"linkbar\"><label><input type=\"checkbox\" id=\"link\" checked> \
          Keep the two players together</label> \
-         <span class=\"step\"><button type=\"button\" id=\"prevf\" title=\"previous frame\">\
-         ◀ frame</button><button type=\"button\" id=\"nextf\" title=\"next frame\">frame ▶\
-         </button></span> \
          <span id=\"linkstate\" class=\"note\"></span></p>\n",
     );
     h.push_str("</section>\n");
@@ -329,6 +330,31 @@ pub fn fragment(r: &DeclaredCorrespondence, inputs: &PageInputs) -> String {
                 esc(&duration(u.copy_end_us - u.copy_start_us)),
                 u.frames_examined,
                 esc(&match (u.frames_declaring, u.frames_contradicted) {
+                    // Said first, because it settles the stretch: a strip that
+                    // names another recording is not evidence about this one,
+                    // and was not compared to it.
+                    _ if u.frames_foreign > 0 => {
+                        let tags: Vec<String> = u
+                            .foreign_tags
+                            .iter()
+                            .map(|(t, n)| format!("0x{t:04X} on {n}"))
+                            .collect();
+                        format!(
+                            "{} frame(s) carry another recording's signature ({}) and that \
+                             recording's own frame numbers. They are its frames, not this \
+                             one's; nothing here was compared against this original{}",
+                            u.frames_foreign,
+                            tags.join(", "),
+                            if u.frames_foreign < u.frames_examined {
+                                format!(
+                                    ". The other {} frame(s) carry no readable strip",
+                                    u.frames_examined - u.frames_foreign
+                                )
+                            } else {
+                                String::new()
+                            }
+                        )
+                    }
                     (0, _) => "no frame here carries a readable strip, so no question was \
                                put to the original at all. Whether this is inserted \
                                material or simply unreadable is not settled here — \
@@ -784,6 +810,9 @@ fn frame_line(shot: usize, n: &FrameNote) -> String {
             "declares a frame number the original does not have".to_string()
         }
         NoteReason::NoDeclaration => "no readable strip".to_string(),
+        NoteReason::ForeignSignature => {
+            "carries another recording's signature — not compared to this one".to_string()
+        }
         NoteReason::TooFarToJudge => match n.distance {
             Some(d) => format!(
                 "{d} of 63 bits apart — too far to confirm, not far enough to \
@@ -860,6 +889,14 @@ pre { background:rgba(127,127,127,.12); padding:8px 10px; border-radius:4px;
            align-items:baseline; flex-wrap:wrap; min-height:2.6em; }
 .linkbar label { white-space:nowrap; }
 .players figure.adrift video { outline:2px solid var(--bad); outline-offset:-2px; }
+/* A white flash on the supplied file's picture as its playhead crosses a
+   break — a join, or the edge of a stretch with no counterpart. It marks the
+   moment something was skipped or entered, whether the reader was playing,
+   stepping, or being carried by the other player. */
+.players figure { position:relative; }
+.players figure.flash::after { content:""; position:absolute; left:0; right:0; top:0;
+  bottom:0; background:#fff; pointer-events:none; animation:erflash .38s ease-out forwards; }
+@keyframes erflash { 0% { opacity:.95; } 100% { opacity:0; } }
 .fcount { margin:4px 0 0; font-size:12px; color:var(--dim); display:flex; gap:12px;
           align-items:baseline; font-variant-numeric:tabular-nums; }
 .fcount span { font-weight:600; color:inherit; }
@@ -935,16 +972,24 @@ window.editReportLink = function () {
   // the middle of frame k back as k+1 and the two conversions would disagree
   // by half a frame. They did — stepping went 180, 181, 183, 184, 186.
   function counterAt(t, side) {
-    var slack = periodOf(side);
+    var P = periodOf(side);
     for (var i = 0; i < shots.length; i++) {
       var s = shots[i];
       var a0 = s[side + '0'], a1 = s[side + '1'];
-      if (t >= a0 - slack && t <= a1 + slack) {
-        var span = a1 - a0;
-        if (span <= 0.001) return s.k0;
-        var k = Math.floor(s.k0 + (s.k1 - s.k0) * ((t - a0) / span) + 1e-6);
-        return Math.min(s.k1, Math.max(s.k0, k));
-      }
+      // A shot covers its first frame's interval through its last frame's:
+      // [a0, a1 + P). Half a frame of grace at the front for the map's
+      // millisecond rounding.
+      if (t < a0 - P / 2 || t >= a1 + P * 1.5) continue;
+      var span = a1 - a0;
+      if (span <= 0.001) return s.k0;
+      // 0.02 of a frame absorbs the map's 3-decimal rounding; anything more
+      // would start naming neighbours. No clamping past the ends: a frame
+      // one past k1 is NOT k1, and clamping it there put the original on
+      // frame 271 while the copy showed the last inserted frame, with the
+      // readout claiming both were 271.
+      var k = Math.floor(s.k0 + (s.k1 - s.k0) * ((t - a0) / span) + 0.02);
+      if (k < s.k0 || k > s.k1) continue;
+      return k;
     }
     return null;
   }
@@ -1068,7 +1113,6 @@ window.editReportLink = function () {
     v.addEventListener('seeked', function () {
       if (isEcho(v, 'seek')) return;
       driver = v;
-      atCounter = null;   // the reader moved it themselves
       follow(v, true);
     });
 
@@ -1083,7 +1127,6 @@ window.editReportLink = function () {
     v.addEventListener('play', function () {
       if (isEcho(v, 'play', true)) return;
       driver = v;
-      atCounter = null;
       if (!linked()) return;
       // Only if the other side has somewhere to be. Starting a player with no
       // counterpart would walk it away from the moment being compared.
@@ -1130,7 +1173,41 @@ window.editReportLink = function () {
   // conversion the players themselves use, so what is displayed cannot
   // disagree with what is aligned.
 
+  // Breaks in the supplied file's timeline: every shot edge in copy time.
+  // Crossing one means a join was passed, or a stretch with no counterpart
+  // was entered or left.
+  var breaks = [];
+  for (var bi = 0; bi < shots.length; bi++) { breaks.push(shots[bi].c0); breaks.push(shots[bi].c1); }
+  var prevCopyT = null;
+  var quietUntil = 0;   // a click on a report line is not a crossing
+  function flashCopy() {
+    var fig = vc.closest('figure');
+    if (!fig) return;
+    fig.classList.remove('flash');
+    void fig.offsetWidth;             // restart the animation if it is running
+    fig.classList.add('flash');
+  }
+  function copyMoved() {
+    var t = vc.currentTime;
+    if (prevCopyT !== null && Math.abs(t - prevCopyT) > 0.0005 && Date.now() > quietUntil) {
+      for (var i = 0; i < breaks.length; i++) {
+        var b = breaks[i];
+        if ((prevCopyT < b && t >= b) || (prevCopyT > b && t <= b)) { flashCopy(); break; }
+      }
+    }
+    prevCopyT = t;
+  }
+  // On the FIGURE: the animation runs on its ::after, so that is where the
+  // event arrives. Listening on the video left the class stuck after the
+  // first flash — invisible, since the animation ends at opacity 0, but a
+  // stuck class is a lie waiting for a stylesheet change.
+  (function () {
+    var fig = vc.closest('figure');
+    if (fig) fig.addEventListener('animationend', function () { fig.classList.remove('flash'); });
+  })();
+
   function showFrame(v, el) {
+    if (v === vc) copyMoved();
     if (!el) return;
     var side = v === vc ? 'c' : 'o';
     var k = counterAt(v.currentTime, side);
@@ -1138,9 +1215,15 @@ window.editReportLink = function () {
       ? 'f=? · ' + v.currentTime.toFixed(2) + 's'
       : 'f=' + k + ' · ' + v.currentTime.toFixed(2) + 's';
   }
+  // The presented frame's OWN timestamp, from the compositor. `currentTime`
+  // is where the reader asked to be; this is the frame that answered, and
+  // on a file whose frame grid is irregular — an inserted second at 29.4
+  // fps inside a 30 fps film — the two differ by up to a frame.
+  var painted = { o: null, c: null };
   function watchFrames(v, el) {
     if (v.requestVideoFrameCallback) {
-      var tick = function () {
+      var tick = function (now, md) {
+        if (md && typeof md.mediaTime === 'number') painted[v === vc ? 'c' : 'o'] = md.mediaTime;
         showFrame(v, el);
         v.requestVideoFrameCallback(tick);
       };
@@ -1165,40 +1248,44 @@ window.editReportLink = function () {
   // and after a few steps the pair sat one or two frames apart. An integer
   // cannot drift — so the counter moves by one and each side is told where
   // that counter lives.
-  // The frame the last step aimed at. Kept because re-deriving it from the
-  // clock at every click compounds each conversion's rounding; an integer
-  // carried forward cannot.
-  var atCounter = null;
-
-  function step(dir) {
-    // Before the reader has touched either, step from the supplied file —
-    // the one the report is about.
-    var v = driver === vo ? vo : vc;
+  // One frame at a time, in the player's OWN timeline, then the other
+  // follows where it can.
+  //
+  // The first version stepped by counter — "next frame" meant the next frame
+  // number of the ORIGINAL — so on the supplied file it walked straight over
+  // an inserted second: those 30 frames have no number in this recording and
+  // the step never landed on them. Play, which runs through the file's own
+  // time, showed them. A step that hides what play reveals is the wrong step
+  // for a verification tool. Each player now steps through every frame it
+  // has; the link maps the position across, and holds the other player still
+  // where there is nothing to map to.
+  //
+  // Re-derived from the clock each time and aimed at mid-frame, so nothing
+  // accumulates: there is no counter to carry forward and no rounding to
+  // compound.
+  function step(v, dir) {
     var side = v === vc ? 'c' : 'o';
+    var period = periodOf(side);
+    driver = v;
     drivePlay(vc, false);
     drivePlay(vo, false);
-
-    var k = atCounter !== null ? atCounter : counterAt(v.currentTime, side);
-    var tc = k === null ? null : timeOfCounter(k + dir, 'c');
-    var to = k === null ? null : timeOfCounter(k + dir, 'o');
-    if (tc === null || to === null) {
-      // Outside any shot there is no counter to step: move the player the
-      // reader is driving and let the other hold, as everywhere else.
-      atCounter = null;
-      driveTime(v, Math.max(0, v.currentTime + dir * periodOf(side)));
-      setTimeout(function () { follow(v, true); }, 0);
-      return;
-    }
-    atCounter = k + dir;
-    driveTime(vc, Math.max(0, tc));
-    driveTime(vo, Math.max(0, to));
-    setAdrift(vo, false);
-    setAdrift(vc, false);
+    // From the frame actually on screen. A grid assumed regular from 0 was
+    // wrong on the first real file tried: stepping back from the first frame
+    // after an insertion landed 1.5 frames back, inside the inserted second.
+    // Forward aims 1.5 frames past this frame's start, backward half a frame
+    // before it — inside the neighbour for any local period above half the
+    // nominal one, which every real file satisfies.
+    var base = painted[side];
+    if (base === null || Math.abs(base - v.currentTime) > period) base = v.currentTime;
+    driveTime(v, Math.max(0, dir > 0 ? base + 1.5 * period : base - 0.5 * period));
+    // `currentTime` reflects the request at once, so the other side can be
+    // placed now rather than waiting for a `seeked` the browser may coalesce.
+    follow(v, true);
   }
-  var prevf = document.getElementById('prevf');
-  var nextf = document.getElementById('nextf');
-  if (prevf) prevf.addEventListener('click', function () { step(-1); });
-  if (nextf) nextf.addEventListener('click', function () { step(1); });
+  [['prevo', vo, -1], ['nexto', vo, 1], ['prevc', vc, -1], ['nextc', vc, 1]].forEach(function (b) {
+    var el = document.getElementById(b[0]);
+    if (el) el.addEventListener('click', function () { step(b[1], b[2]); });
+  });
 
   // Seek, then pause: the point is to compare two still frames, and a player
   // that keeps rolling has moved off the frame by the time you look at it.
@@ -1210,6 +1297,8 @@ window.editReportLink = function () {
   document.addEventListener('click', function (e) {
     var b = e.target.closest && e.target.closest('button.at');
     if (!b) return;
+    // The reader asked to go here; the jump is not a crossing to flash.
+    quietUntil = Date.now() + 700;
     // Both are driven from here, so both echoes are registered — otherwise
     // each lands as a reader's seek and the pair starts volleying.
     seek(vc, b.dataset.copy);
@@ -1222,7 +1311,6 @@ window.editReportLink = function () {
       setAdrift(vo, true);
     }
     driver = vc;
-    atCounter = null;
     (vo || vc).scrollIntoView({ block: 'start', behavior: 'smooth' });
   });
 
@@ -1481,6 +1569,8 @@ mod tests {
             frames_examined: 31,
             frames_declaring: 3,
             frames_contradicted: 2,
+            frames_foreign: 0,
+            foreign_tags: vec![],
         }];
         let h = render(&r, &inputs());
         assert!(h.contains("correspond to nothing in the original"));
@@ -1669,7 +1759,24 @@ mod tests {
         let h = render(&base(), &inputs());
         assert!(h.contains("id=\"fo\"") && h.contains("id=\"fc\""), "{h}");
         assert!(h.contains("function counterAt(t, side)"));
-        assert!(h.contains("id=\"prevf\"") && h.contains("id=\"nextf\""));
+        // One pair per player, stepping that player's OWN frames. A single
+        // pair stepped by counter walked straight over an inserted second on
+        // the supplied file — those frames have no number in this recording.
+        for id in ["prevo", "nexto", "prevc", "nextc"] {
+            assert!(h.contains(&format!("id=\"{id}\"")), "{id} missing");
+        }
+        assert!(
+            !h.contains("id=\"nextf\""),
+            "the counter-stepping pair is back"
+        );
+        assert!(
+            h.contains("base + 1.5 * period : base - 0.5 * period"),
+            "step from the painted frame"
+        );
+        assert!(
+            h.contains("if (k < s.k0 || k > s.k1) continue;"),
+            "no clamping past a shot's ends"
+        );
         // Stepped by counter, never by adding a duration to each clock: both
         // the addition and the projection round, and the pair drifted one to
         // two frames apart after a few steps.
@@ -1687,6 +1794,43 @@ mod tests {
         // here would let inserted material at the very start of a file read
         // as corresponding, in the players, to frames it does not match.
         assert!(!h.contains("return first.k0;"), "{h}");
+    }
+
+    #[test]
+    fn crossing_a_break_flashes_the_supplied_player() {
+        // Play or step on the original carries the copy over an insertion in
+        // one jump; the flash is what says something was skipped there. A
+        // click on a report line is a deliberate arrival, not a crossing.
+        let h = render(&base(), &inputs());
+        assert!(h.contains("function copyMoved()"), "{h}");
+        assert!(h.contains("breaks.push(shots[bi].c0); breaks.push(shots[bi].c1);"));
+        assert!(h.contains("figure.flash::after"));
+        assert!(h.contains("quietUntil = Date.now() + 700;"));
+    }
+
+    #[test]
+    fn frames_from_another_recording_are_not_said_to_differ_from_this_one() {
+        // Their strip names recording B. "Names a moment of the original and
+        // does not look like it" was a question put to the wrong original,
+        // with an accusation-shaped answer.
+        let mut r = base();
+        r.unconfirmed = vec![crate::declared::UnconfirmedStretch {
+            copy_start_us: 9_010_000,
+            copy_end_us: 9_980_000,
+            frames_examined: 30,
+            frames_declaring: 30,
+            frames_contradicted: 0,
+            frames_foreign: 30,
+            foreign_tags: vec![(0x66AF, 30)],
+        }];
+        let h = render(&r, &inputs());
+        // `esc()` turns the apostrophe into &#39;, so match around it.
+        assert!(h.contains("signature (0x66AF on 30)"), "{h}");
+        assert!(h.contains("nothing here was compared against this original"));
+        // The stretch's old sentence, specifically — section 5 says
+        // "does not look like it" of a genuinely contradicted frame, and
+        // that one is right.
+        assert!(!h.contains("name a moment of the original and do not look like it"));
     }
 
     #[test]
