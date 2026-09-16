@@ -25,7 +25,7 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       # `rustup show` installs exactly what rust-toolchain.toml names —
       # version, components and targets. Naming a toolchain in the workflow
       # instead would give two places to change it and one of them would
@@ -42,7 +42,7 @@ jobs:
   wasm:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: rustup show
       - uses: Swatinem/rust-cache@v2
       - run: cargo build -p edit-report-core --target wasm32-unknown-unknown --release
@@ -77,7 +77,7 @@ jobs:
   integration:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: rustup show
       - uses: Swatinem/rust-cache@v2
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
@@ -111,7 +111,7 @@ jobs:
             name: edit-report-macos-x86_64
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: rustup show
       - run: rustup target add ${{ matrix.target }}
       # Paths out of the binary, or it carries the runner's home directory
@@ -157,7 +157,7 @@ jobs:
     needs: [test, wasm]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: rustup show
       - run: ./web/build-single.sh
       - name: Refuse a page that carries the runner's paths
@@ -186,7 +186,7 @@ jobs:
       id-token: write        # sign the provenance
       attestations: write    # record it
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: actions/download-artifact@v4
         with:
           path: staging

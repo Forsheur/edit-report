@@ -218,10 +218,18 @@ provenance attestation and `SHA256SUMS`. The CI also builds the browser page
 twice from two directories and fails if they differ, so a regression here
 cannot pass unnoticed.
 
-What is not yet demonstrated: that a build on macOS and one on the Linux
-runner give the same bytes. The wasm target has no host in it and the LLVM is
-the same, so they should; the first release will say. If they do not, the
-canonical build becomes a container at a fixed path, which anyone can run.
+A build on macOS and one on the Linux runner do **not** give the same bytes,
+and that was measured rather than assumed. Two causes, neither of them in
+this code: Cargo derives symbol suffixes from the whole `rustc -vV` string,
+which names the host triple, so the host leaks into a wasm32 artefact that
+otherwise has nothing host-specific in it; and a native executable is linked
+by the system linker, so the distribution matters. The answer is that the
+reproducible build is specified as an environment, not only as a source:
+`web/build-reproducible.sh` runs it in a pinned container, and reproduces the
+published `edit-report.html` and Linux executable exactly. The macOS and
+Windows executables are not reproducible outside the runner's own OS; for
+them the provenance attestation is the weaker thing that remains, and the
+README says so rather than implying otherwise.
 
 ---
 

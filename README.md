@@ -9,6 +9,11 @@ It compares a video you were given against a **Forsheur evidence bundle** — th
 `.zip` a Forsheur server hands out, which carries the sealed original, the
 signatures, and its own verifier.
 
+**[Download the latest release](https://github.com/forsheur/edit-report/releases/latest)** —
+`edit-report.html` runs in a browser with nothing installed; the executables do
+the full comparison, chain verification included. Check what you got against
+`SHA256SUMS`, and read what this tool cannot establish before using it.
+
 ---
 
 ## Read this before anything else: what this tool cannot establish
@@ -313,17 +318,39 @@ published as a permanent GitHub Release with `SHA256SUMS` covering every file.
 
     # Does it match the source?
     git checkout v0.1.0
-    ./web/build-single.sh
-    shasum -a 256 dist/edit-report.html      # must equal the published digest
+    ./web/build-reproducible.sh              # needs docker
+    # prints the SHA-256 of edit-report.html; it must equal the published one
 
-Three things make that rebuild land on the same bytes, and all three are in
-the repository rather than in anyone's head: the compiler version
-(`rust-toolchain.toml`), the dependency set (`Cargo.lock`, built with
-`--locked`), and a release profile with a single codegen unit (workspace
-`Cargo.toml` — the default sixteen leave a path-derived hash in one symbol
-suffix, which was the last thing that differed between two checkouts of the
-same commit). Paths are remapped out of the binary on top of that. The CI
-builds the page twice, from two directories, and fails if the two differ.
+The second command builds in a container rather than on your machine, and
+the difference matters. Four things have to be fixed before two people get
+the same bytes, and only three of them live in this repository: the compiler
+version (`rust-toolchain.toml`), the dependency set (`Cargo.lock`, with
+`--locked`), and a release profile of one codegen unit (workspace
+`Cargo.toml` — with the default sixteen, LLVM leaves a path-derived hash in a
+symbol suffix, which was the last thing differing between two checkouts of
+the same commit). Paths are remapped out of the artefact on top of that.
+
+The fourth is the machine, and it cannot be written down — it has to be
+supplied. Cargo derives symbol suffixes from the full `rustc -vV` output,
+which names the host triple, so a macOS host and a Linux host disagree even
+when both target wasm32; and a native executable is linked by the system's
+own linker, so Debian and Ubuntu disagree too. Measured against the v0.1.0
+release:
+
+| Built in | Artefact | Matches the release |
+|---|---|---|
+| `rust:1.93.0-bookworm` | `edit-report.html` | yes |
+| `ubuntu:24.04` + rustup | `edit-report-linux-x86_64` | yes |
+| macOS, natively | `edit-report.html` | **no** — different host |
+
+So the page, which is the thing most readers actually run, is reproducible by
+anyone with docker. The macOS and Windows executables would need the runner's
+own OS and Xcode/MSVC; for those the provenance attestation is what stands,
+and that is a weaker statement — it says who built the file, not that the file
+follows from the source.
+
+The CI builds the page twice from two directories and fails if they differ,
+so the part that *is* under our control cannot silently regress.
 
 The attestation is a signed statement, in a public transparency log, that this
 file was produced by this workflow from this commit. It says where the file
@@ -334,6 +361,23 @@ check with your own eyes needs no chain of hashes at all.
 
 Development happens on macOS Apple Silicon. Windows and Linux binaries are built
 in CI, never on a developer machine — see `.github/workflows/`.
+
+### macOS
+
+The released executables are **not signed or notarised**, so Gatekeeper stops
+the first run: *"cannot be opened because the developer cannot be verified"*.
+Signing them would mean paying Apple for the right to say who built a file,
+which the provenance attestation already says, in public, for free. So:
+
+    chmod +x edit-report-macos-aarch64        # or -x86_64 on an Intel Mac
+    xattr -d com.apple.quarantine edit-report-macos-aarch64
+
+Or open it once from the Finder with *right-click → Open*, which offers the
+same choice through a dialogue. Either way, check the published SHA-256 first —
+that is the check that means something, and it does not depend on Apple.
+
+`edit-report.html` needs none of this: a browser opens a local file without
+asking anyone's permission.
 
 ### Windows
 
