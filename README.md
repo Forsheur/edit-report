@@ -6,8 +6,8 @@ which parts of one video correspond to which parts of another, where the cuts
 are, and where the picture differs.
 
 It compares a video you were given against a **Forsheur evidence bundle** — the
-`.zip` a Forsheur server hands out, which carries the sealed original, the
-signatures, and its own verifier.
+`.zip` a [Forsheur](https://forsheur.com) server hands out, which carries the
+sealed original, the signatures, and its own verifier.
 
 **[Download the latest release](https://github.com/forsheur/edit-report/releases/latest)** —
 `edit-report.html` runs in a browser with nothing installed; the executables do
@@ -402,3 +402,8 @@ Apache-2.0. See [LICENSE](LICENSE) and the reasoning in
 There is no network client in this binary. It makes no request of any kind, to
 anyone, ever. That is structural rather than a promise: there is nothing in the
 dependency tree that could.
+
+This tool is part of the Forsheur project ([forsheur.com](https://forsheur.com))
+and needs nothing from it. A bundle is all it reads, from your own disk; it
+never asks a server whether that bundle is good, because a verification that
+depends on the party being verified is not one.
