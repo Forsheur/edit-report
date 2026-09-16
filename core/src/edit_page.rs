@@ -1105,6 +1105,14 @@ window.editReportLink = function () {
     if (force || Math.abs(other.currentTime - t) > 0.15) {
       driveTime(other, t);
     }
+    // A counterpart is back. If the driver is rolling and the other was
+    // held still, restart it — otherwise it stays paused and gets dragged
+    // along by one seek per `timeupdate`, a quarter of a second at a time.
+    // Measured on the removal case: seven seeks in 2.4 s after the original
+    // crossed the cut, the copy never playing, which is what a reader sees
+    // as stutter. Only while the driver plays: at a step or a pause there is
+    // nothing to resume.
+    if (!v.paused && other.paused) drivePlay(other, true);
   }
 
   function wire(v) {
@@ -1729,6 +1737,9 @@ mod tests {
         // And only the player the reader touched corrects the other while
         // both roll, or they argue over every tenth of a second.
         assert!(h.contains("if (v !== driver) return;"));
+        // And a player held still through a gap must be restarted when its
+        // counterpart returns, or it is dragged by seeks instead of playing.
+        assert!(h.contains("if (!v.paused && other.paused) drivePlay(other, true);"));
     }
 
     #[test]
