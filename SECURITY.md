@@ -226,10 +226,20 @@ otherwise has nothing host-specific in it; and a native executable is linked
 by the system linker, so the distribution matters. The answer is that the
 reproducible build is specified as an environment, not only as a source:
 `web/build-reproducible.sh` runs it in a pinned container, and reproduces the
-published `edit-report.html` and Linux executable exactly. The macOS and
-Windows executables are not reproducible outside the runner's own OS; for
-them the provenance attestation is the weaker thing that remains, and the
-README says so rather than implying otherwise.
+published `edit-report.html` and Linux executable exactly. The macOS
+executables are not reproducible outside the runner's own OS; for them the
+provenance attestation is the weaker thing that remains, and the README says
+so rather than implying otherwise.
+
+The Windows executable is worse, and stating it plainly matters more than
+looking tidy: it is not reproducible **even on the runner**. Tags `v0.1.0` and
+`v0.1.1` differ in documentation only, were built by the same workflow on the
+same image, and produced byte-identical Linux and macOS binaries — while the
+Windows one changed. MSVC's linker embeds something per-run that no flag of
+ours controls. The consequence for a reader: two different digests for two
+Windows builds prove nothing, in either direction. The check that still works
+is the digest of the exact file GitHub published, in `SHA256SUMS`, plus the
+attestation that names the workflow and commit it came from.
 
 ---
 

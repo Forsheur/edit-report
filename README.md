@@ -342,12 +342,24 @@ release:
 | `rust:1.93.0-bookworm` | `edit-report.html` | yes |
 | `ubuntu:24.04` + rustup | `edit-report-linux-x86_64` | yes |
 | macOS, natively | `edit-report.html` | **no** — different host |
+| GitHub's own runner, twice | `edit-report-windows-x86_64.exe` | **no** — see below |
 
 So the page, which is the thing most readers actually run, is reproducible by
-anyone with docker. The macOS and Windows executables would need the runner's
-own OS and Xcode/MSVC; for those the provenance attestation is what stands,
-and that is a weaker statement — it says who built the file, not that the file
-follows from the source.
+anyone with docker. The macOS executables would need the runner's own OS and
+Xcode; for those the provenance attestation is what stands, and that is a
+weaker statement — it says who built the file, not that the file follows from
+the source.
+
+**The Windows executable is not reproducible at all**, and that is worth being
+blunt about. Tags `v0.1.0` and `v0.1.1` differ in documentation only — not one
+line of Rust — and were built by the same workflow on the same runner image.
+The Linux and both macOS binaries came out byte-identical across the two. The
+Windows one did not: `c5b3d63b…` became `1afbae22…`. MSVC's linker writes
+something that changes from run to run, and no flag of ours reaches it. Nothing
+can be concluded from comparing two Windows builds, so do not read a difference
+there as tampering — check the published SHA-256 of the file you downloaded
+against `SHA256SUMS`, which answers a different and still useful question: did
+you get the file GitHub built.
 
 The CI builds the page twice from two directories and fails if they differ,
 so the part that *is* under our control cannot silently regress.
