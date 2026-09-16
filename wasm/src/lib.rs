@@ -30,6 +30,7 @@ use edit_report_core::edit_page::{self, PageInputs};
 use edit_report_core::fingerprint::fingerprint;
 use edit_report_core::frame::LumaFrame;
 use edit_report_core::imagediff::{self, DiffSettings, Located, OutOfPlace, TileGrid};
+use edit_report_core::overview;
 use std::cell::RefCell;
 
 #[derive(Default)]
@@ -299,6 +300,7 @@ pub extern "C" fn er_finish(fps: f64) -> usize {
             .collect();
         s.located = imagediff::locate(&r, &ogrids, &cgrids, &s.diff);
         s.out_of_place = imagediff::out_of_place(&r, &ogrids, &cgrids, &s.diff);
+        let overview = overview::build(&s.copies, &s.originals, &r, &s.located, &s.out_of_place);
 
         let seconds = (s.copy_duration_us.max(0) as f64) / 1e6;
         let html = edit_page::fragment(
@@ -321,6 +323,7 @@ pub extern "C" fn er_finish(fps: f64) -> usize {
                 diff: s.diff,
                 located_ran: true,
                 out_of_place: &s.out_of_place,
+                overview: Some(&overview),
             },
         );
         s.out = html;

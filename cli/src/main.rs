@@ -588,6 +588,7 @@ fn edit_pass(
             diff: pass.diff_settings,
             located_ran: true,
             out_of_place: &pass.out_of_place,
+            overview: Some(&pass.overview),
         },
     );
     std::fs::write(out, page)?;

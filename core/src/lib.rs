@@ -9,6 +9,7 @@ pub mod html;
 pub mod imagediff;
 pub mod normalize;
 pub mod overlay;
+pub mod overview;
 pub mod qr;
 pub mod report;
 pub mod verifier;

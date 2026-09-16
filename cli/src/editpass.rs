@@ -13,6 +13,7 @@ use edit_report_core::bitrow;
 use edit_report_core::declared::{self, Declared, DeclaredCorrespondence, OriginalFrame, Tuning};
 use edit_report_core::fingerprint::{fingerprint, Fingerprint};
 use edit_report_core::imagediff::{self, DiffSettings, Located, OutOfPlace, TileGrid};
+use edit_report_core::overview::{self, Overview};
 use edit_report_core::report::MediaProfile;
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -41,6 +42,8 @@ pub struct Pass {
     /// Only frames the fingerprint CONFIRMED are here: asking where two
     /// different pictures differ is not a question with an answer.
     pub located: Vec<Located>,
+    /// The whole comparison as two timelines, drawn at the top of the page.
+    pub overview: Overview,
     pub diff_settings: DiffSettings,
     /// Frames read on each side.
     pub original_frames: usize,
@@ -168,11 +171,19 @@ pub fn run(
         .collect();
     let located = imagediff::locate(&correspondence, &ogrids, &cgrids, &diff);
     let out_of_place = imagediff::out_of_place(&correspondence, &ogrids, &cgrids, &diff);
+    let overview = overview::build(
+        &copies,
+        &originals,
+        &correspondence,
+        &located,
+        &out_of_place,
+    );
 
     Ok(Pass {
         correspondence,
         out_of_place,
         located,
+        overview,
         diff_settings: diff,
         original_frames: orows.len(),
         copy_frames: crows.len(),

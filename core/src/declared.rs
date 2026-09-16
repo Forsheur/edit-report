@@ -341,6 +341,10 @@ pub struct DeclaredCorrespondence {
     /// Frames whose strip could not be read at all. Not a signature mismatch —
     /// a cropped, rescaled or overwritten strip reads as nothing.
     pub frames_without_band: usize,
+    /// One verdict per frame of the copy, in the copy's order — what the
+    /// overview colours each frame by. Kept rather than re-derived so the
+    /// figure cannot disagree with the sections.
+    pub verdicts: Vec<FrameVerdict>,
 }
 
 impl DeclaredCorrespondence {
@@ -746,6 +750,7 @@ pub fn build_with(
             seen.into_iter().collect()
         },
         frames_without_band: copy.iter().filter(|c| c.tag.is_none()).count(),
+        verdicts,
     }
 }
 

@@ -14,6 +14,7 @@
 
 use crate::declared::{DeclaredCorrespondence, DeclaredSegment, FrameNote, JoinKind, NoteReason};
 use crate::imagediff::{self, DiffSettings, DifferenceState, Located, OutOfPlace};
+use crate::overview::{self, Overview};
 
 fn esc(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -107,6 +108,9 @@ pub struct PageInputs<'a> {
     /// shot. The only signal here that sees a change spread evenly over a
     /// whole frame; every other one reads that as recompression.
     pub out_of_place: &'a [OutOfPlace],
+    /// The whole comparison as two timelines and the ribbons between them.
+    /// `None` when the pass that builds it was not run.
+    pub overview: Option<&'a Overview>,
 }
 
 /// The whole thing as a standalone document, for the native binary.
@@ -145,6 +149,10 @@ pub fn fragment(r: &DeclaredCorrespondence, inputs: &PageInputs) -> String {
          Forsheur recording. It reaches no verdict about the file, and gives it no score. \
          Every moment named below is a control: click it to put both players on it.</p>\n",
     );
+    // Two columns: the report on the left, the players on the right and
+    // sticky, so whatever section is being read the pictures stay in view.
+    // Below the width for that, the players go on top as before.
+    h.push_str("<div class=\"layout\"><div class=\"main\">\n");
 
     // ── The chain, first and separately ──────────────────────────────────
     h.push_str("<section><h2>1 · This recording</h2>\n");
@@ -169,21 +177,60 @@ pub fn fragment(r: &DeclaredCorrespondence, inputs: &PageInputs) -> String {
     if inputs.chain_checked && !inputs.chain_passed {
         h.push_str(
             "<p>The comparison below is not shown: there is no established original to \
-             compare against.</p>\n</section>\n",
+             compare against.</p>\n</section>\n</div></div>\n",
         );
         return h;
     }
     h.push_str(&signature_block(r));
     h.push_str("</section>\n");
 
+    // ── At a glance ──────────────────────────────────────────────────────
+    h.push_str("<section><h2>2 · At a glance</h2>\n");
+    match inputs.overview {
+        Some(o) => {
+            h.push_str(
+                "<p>The original runs down the left, the supplied file down the right, \
+                 time from top to bottom. Each shot that corresponds is a ribbon joining the two \
+                 — level when the offset is nil, slanted when it is not, crossing another \
+                 when the order changed. <strong>Colour is the original's time</strong>: blue at \
+                 its first frame, orange at its last. The thin strip on the supplied file's \
+                 edge shows where each of its frames came from; the rest of that column \
+                 shows each frame's state. Click anywhere to put both players there.</p>\n",
+            );
+            h.push_str(
+                "<p class=\"legend\">supplied file: \
+                 <span style=\"background:#9fb4c8\"></span>conforming \
+                 <span style=\"background:#e08a2e\"></span>differs \
+                 <span style=\"background:#c9c9c9\"></span>inconclusive \
+                 <span style=\"background:#a061c9\"></span>from another recording \
+                 &nbsp;·&nbsp; original: <span style=\"background:#fff;border-style:dashed\"></span>\
+                 absent from the supplied file</p>\n",
+            );
+            h.push_str("<div class=\"ovwrap\">");
+            h.push_str(&overview::svg(o));
+            h.push_str("</div>\n");
+            h.push_str(
+                "<p class=\"note\">Fixed height, one scale for both columns, set by the \
+                 longer. A conforming frame keeps three pixels; a frame that differs, an \
+                 inconclusive one or a short absent stretch is grown to eight and named beside \
+                 the column with its true count. Nothing here \
+                 is a verdict — a column that is all one colour is conforming frame by frame, \
+                 not validated.</p>\n",
+            );
+        }
+        None => h.push_str("<p>Not performed in this run.</p>\n"),
+    }
+    h.push_str("</section>\n");
+
+    let mut side = String::with_capacity(2_000);
     // ── The players ──────────────────────────────────────────────────────
     //
     // The row is its own element. The link bar used to be a third flex item
     // beside the two figures, so the row re-distributed every time the
     // "held still" notice appeared — which is exactly at a cut, the moment a
     // reader is looking hardest. The picture jumped from 242 to 306 px.
-    h.push_str("<section class=\"players\">\n<div class=\"playerrow\">\n");
-    h.push_str(&format!(
+    side.push_str("<div class=\"players\">\n<div class=\"playerrow\">\n");
+    side.push_str(&format!(
         "<figure><figcaption>Original — {}</figcaption>\
          <video id=\"vo\" controls preload=\"metadata\" src=\"{}\"></video>\
          <p class=\"fcount\"><span id=\"fo\">—</span> \
@@ -194,7 +241,7 @@ pub fn fragment(r: &DeclaredCorrespondence, inputs: &PageInputs) -> String {
         esc(inputs.original_label),
         esc(inputs.original_src)
     ));
-    h.push_str(&format!(
+    side.push_str(&format!(
         "<figure><figcaption>Supplied file — {}</figcaption>\
          <video id=\"vc\" controls preload=\"metadata\" src=\"{}\"></video>\
          <p class=\"fcount\"><span id=\"fc\">—</span> \
@@ -205,15 +252,15 @@ pub fn fragment(r: &DeclaredCorrespondence, inputs: &PageInputs) -> String {
         esc(inputs.copy_label),
         esc(inputs.copy_src)
     ));
-    h.push_str(
+    side.push_str(
         "</div>\n<p class=\"linkbar\"><label><input type=\"checkbox\" id=\"link\" checked> \
          Keep the two players together</label> \
          <span id=\"linkstate\" class=\"note\"></span></p>\n",
     );
-    h.push_str("</section>\n");
+    side.push_str("</div>\n");
 
     // ── Shots ────────────────────────────────────────────────────────────
-    h.push_str("<section><h2>2 · Shots that correspond to the original</h2>\n");
+    h.push_str("<section><h2>3 · Shots that correspond to the original</h2>\n");
     if r.segments.is_empty() {
         h.push_str(
             "<p>No correspondence was established anywhere in this file. That is an absence \
@@ -240,7 +287,7 @@ pub fn fragment(r: &DeclaredCorrespondence, inputs: &PageInputs) -> String {
     h.push_str("</section>\n");
 
     // ── Cuts ─────────────────────────────────────────────────────────────
-    h.push_str("<section><h2>3 · Where the supplied file leaves the original's order</h2>\n");
+    h.push_str("<section><h2>4 · Where the supplied file leaves the original's order</h2>\n");
     if r.cuts.is_empty() {
         h.push_str(if r.segments.len() == 1 {
             "<p>Nowhere. One shot, running from end to end in the original's own order.</p>\n"
@@ -312,7 +359,7 @@ pub fn fragment(r: &DeclaredCorrespondence, inputs: &PageInputs) -> String {
     // to be missing: inserted material sits BETWEEN two shots, so a report
     // that only walked the inside of each shot showed a second of foreign
     // footage as nothing at all.
-    h.push_str("<section><h2>4 · Stretches that correspond to nothing in the original</h2>\n");
+    h.push_str("<section><h2>5 · Stretches that correspond to nothing in the original</h2>\n");
     if r.unconfirmed.is_empty() {
         h.push_str("<p>None. Every part of the file was placed in the original.</p>\n");
     } else {
@@ -358,7 +405,7 @@ pub fn fragment(r: &DeclaredCorrespondence, inputs: &PageInputs) -> String {
                     (0, _) => "no frame here carries a readable strip, so no question was \
                                put to the original at all. Whether this is inserted \
                                material or simply unreadable is not settled here — \
-                               section 3 says whether the join around it accounts for the \
+                               section 4 says whether the join around it accounts for the \
                                time"
                         .to_string(),
                     (d, 0) =>
@@ -375,11 +422,11 @@ pub fn fragment(r: &DeclaredCorrespondence, inputs: &PageInputs) -> String {
     h.push_str("</section>\n");
 
     // ── Frames that differ ───────────────────────────────────────────────
-    h.push_str("<section><h2>5 · Frames whose picture differs from the original's</h2>\n");
+    h.push_str("<section><h2>6 · Frames whose picture differs from the original's</h2>\n");
     let total_differing: usize = r.segments.iter().map(|s| s.differing.len()).sum();
     if total_differing == 0 {
         h.push_str(
-            "<p>None, among the frames that could be judged. See section 8 for the frames \
+            "<p>None, among the frames that could be judged. See section 9 for the frames \
              that could not.</p>\n",
         );
     } else {
@@ -398,20 +445,20 @@ pub fn fragment(r: &DeclaredCorrespondence, inputs: &PageInputs) -> String {
 
     // ── Where inside a frame the picture differs ─────────────────────────
     h.push_str(
-        "<section><h2>6 · Where the picture differs inside frames that otherwise \
+        "<section><h2>7 · Where the picture differs inside frames that otherwise \
          correspond</h2>\n",
     );
     h.push_str(&located_section(inputs));
     h.push_str("</section>\n");
 
     // ── Frames that do not sit with their neighbours ─────────────────────
-    h.push_str("<section><h2>7 · Frames that do not sit with their neighbours</h2>\n");
+    h.push_str("<section><h2>8 · Frames that do not sit with their neighbours</h2>\n");
     h.push_str(&out_of_place_section(inputs));
     h.push_str("</section>\n");
 
     // ── Inconclusive ─────────────────────────────────────────────────────
     let total_inconclusive: usize = r.segments.iter().map(|s| s.inconclusive.len()).sum();
-    h.push_str("<section><h2>8 · Frames nothing could be established about</h2>\n");
+    h.push_str("<section><h2>9 · Frames nothing could be established about</h2>\n");
     h.push_str(&format!(
         "<p>{} frame(s). These are not evidence of anything, in either direction. \
          A frame is here because its strip could not be read — too compressed, too \
@@ -430,13 +477,16 @@ pub fn fragment(r: &DeclaredCorrespondence, inputs: &PageInputs) -> String {
     } else if total_inconclusive > 400 {
         h.push_str(
             "<p class=\"note\">Too many to list one by one; the per-shot counts in \
-             section 2 carry them.</p>\n",
+             section 3 carry them.</p>\n",
         );
     }
     h.push_str("</section>\n");
 
     // ── What this cannot say ─────────────────────────────────────────────
     h.push_str(&limits(r, inputs));
+    h.push_str("</div>\n<aside class=\"side\">\n");
+    h.push_str(&side);
+    h.push_str("</aside></div>\n");
 
     h.push_str(&shot_map(r));
     h
@@ -841,7 +891,7 @@ fn limits(r: &DeclaredCorrespondence, inputs: &PageInputs) -> String {
         0.0
     };
     format!(
-        "<section><h2>9 · What this report cannot say</h2>\n<ul class=\"limits\">\n\
+        "<section><h2>10 · What this report cannot say</h2>\n<ul class=\"limits\">\n\
          <li>{} frames were read, {:.1} per second of the supplied file. Nothing is claimed \
          about a moment that was not read.</li>\n\
          <li>The picture comparison uses a 63-bit fingerprint of each frame's coarse \
@@ -876,10 +926,25 @@ h2 { font-size:16px; margin:32px 0 8px; padding-bottom:4px; border-bottom:1px so
 pre { background:rgba(127,127,127,.12); padding:8px 10px; border-radius:4px;
       overflow-x:auto; font-size:13px; }
 .note, .sub { color:var(--dim); font-size:13px; }
-.players { position:sticky; top:0; background:Canvas; padding:8px 0; z-index:5;
-           border-bottom:1px solid var(--line); }
+.layout { display:grid; grid-template-columns:minmax(0,1fr); gap:0 24px; }
+.main { min-width:0; }
+/* The players sit on top, sticky, when there is no room beside the report;
+   beside it and sticky when there is. Either way they never scroll away. */
+.side { position:sticky; top:0; background:Canvas; z-index:5; align-self:start;
+        padding:8px 0; border-bottom:1px solid var(--line); order:-1; }
 .playerrow { display:flex; gap:12px; flex-wrap:wrap; }
 .players figure { flex:1 1 300px; margin:0; min-width:0; }
+@media (min-width: 1000px) {
+  body { max-width:1400px; }
+  .layout { grid-template-columns:minmax(0,1fr) 460px; }
+  .side { order:0; top:8px; border-bottom:none; padding:0; }
+  .playerrow { flex-direction:column; }
+  .players figure { flex:none; }
+}
+.ovwrap { overflow-x:auto; }
+.legend span { display:inline-block; width:14px; height:10px; margin:0 4px 0 12px;
+               vertical-align:middle; border:1px solid #999; }
+svg.overview { cursor:crosshair; max-width:100%; height:auto; }
 .players figcaption { font-size:12px; color:var(--dim); margin-bottom:4px; }
 .players video { width:100%; max-height:42vh; background:#000; }
 /* Two lines' worth reserved whether the notice is showing or not: it appears
@@ -1216,8 +1281,9 @@ window.editReportLink = function () {
 
   function showFrame(v, el) {
     if (v === vc) copyMoved();
-    if (!el) return;
     var side = v === vc ? 'c' : 'o';
+    movePlayhead(side, v.currentTime);
+    if (!el) return;
     var k = counterAt(v.currentTime, side);
     el.textContent = k === null
       ? 'f=? · ' + v.currentTime.toFixed(2) + 's'
@@ -1302,6 +1368,52 @@ window.editReportLink = function () {
     drivePlay(v, false);
     driveTime(v, parseFloat(t));
   }
+  // ── The overview ────────────────────────────────────────────────────────
+  //
+  // Two columns in their own time. A click is a moment on one of them: the
+  // column is whichever side of the midpoint the pointer fell, the time is the
+  // height above the top divided by that column's scale. The other player
+  // follows through the same mapping every other control uses.
+  var ov = document.querySelector('svg.overview');
+  // One scale for both columns, so a ribbon is level exactly when the
+  // offset is nil.
+  function ovScale() { return parseFloat(ov.dataset.scale); }
+  function movePlayhead(side, t) {
+    if (!ov) return;
+    var ph = document.getElementById('ov-ph-' + side);
+    if (!ph) return;
+    var y = parseFloat(ov.dataset.top) + t * ovScale();
+    ph.setAttribute('y1', y.toFixed(1));
+    ph.setAttribute('y2', y.toFixed(1));
+  }
+  if (ov) ov.addEventListener('click', function (e) {
+    var r = ov.getBoundingClientRect();
+    // The SVG scales with its box; the ratio puts the pointer back in the
+    // viewBox's own pixels.
+    var vb = ov.viewBox.baseVal;
+    var sx = vb.width / r.width, sy = vb.height / r.height;
+    var x = (e.clientX - r.left) * sx, y = (e.clientY - r.top) * sy;
+    var mid = (parseFloat(ov.dataset.xo) + parseFloat(ov.dataset.xc)) / 2;
+    var side = x < mid ? 'o' : 'c';
+    var dur = parseFloat(ov.dataset[side === 'c' ? 'durC' : 'durO']);
+    var t = (y - parseFloat(ov.dataset.top)) / ovScale();
+    t = Math.max(0, Math.min(dur, t));
+    var v = side === 'c' ? vc : vo, w = side === 'c' ? vo : vc;
+    if (!v) return;
+    quietUntil = Date.now() + 700;
+    seek(v, t);
+    var u = w ? otherTime(t, side) : null;
+    if (u !== null) {
+      seek(w, u);
+      setAdrift(vo, false);
+      setAdrift(vc, false);
+    } else if (w) {
+      drivePlay(w, false);
+      setAdrift(w, true);
+    }
+    driver = v;
+  });
+
   document.addEventListener('click', function (e) {
     var b = e.target.closest && e.target.closest('button.at');
     if (!b) return;
@@ -1388,6 +1500,7 @@ mod tests {
             tag_expected: Some(0xD53D),
             tags_seen: vec![(0xD53D, 233)],
             frames_without_band: 0,
+            verdicts: vec![],
         }
     }
 
@@ -1407,7 +1520,70 @@ mod tests {
             diff: DiffSettings::default(),
             located_ran: false,
             out_of_place: &[],
+            overview: None,
         }
+    }
+
+    #[test]
+    fn the_overview_is_section_two_and_says_when_it_did_not_run() {
+        let h = render(&base(), &inputs());
+        assert!(h.contains("<h2>2 · At a glance</h2>"));
+        assert!(h.contains("Not performed in this run."));
+        assert!(!h.contains("svg class=\"overview\""));
+
+        let r = base();
+        let ov = crate::overview::build(&[], &[], &r, &[], &[]);
+        let h = render(
+            &r,
+            &PageInputs {
+                overview: Some(&ov),
+                ..inputs()
+            },
+        );
+        assert!(h.contains("<h2>2 · At a glance</h2>"));
+        assert!(h.contains("svg class=\"overview\""));
+        // The drawing is a control like every named moment: it drives both
+        // players, and the playheads follow them.
+        assert!(h.contains("ov.addEventListener('click'"));
+        assert!(h.contains("function movePlayhead(side, t)"));
+        assert!(h.contains("movePlayhead(side, v.currentTime);"));
+    }
+
+    #[test]
+    fn the_players_sit_beside_the_report_and_the_sections_are_renumbered() {
+        let h = render(&base(), &inputs());
+        let main = h
+            .find("<div class=\"layout\"><div class=\"main\">")
+            .expect("layout");
+        let aside = h.find("<aside class=\"side\">").expect("aside");
+        let players = h.find("<div class=\"players\">").expect("players");
+        let limits = h
+            .find("<h2>10 · What this report cannot say")
+            .expect("limits");
+        // Every section, the limits included, is in the main column; the
+        // players are in the aside after it.
+        assert!(main < limits && limits < aside && aside < players);
+        assert!(h.contains(".side { position:sticky;"));
+        assert!(h.contains("grid-template-columns:minmax(0,1fr) 460px;"));
+        // The cross-references moved with the sections they point to.
+        assert!(h.contains("<h2>3 · Shots that correspond"));
+        assert!(h.contains("<h2>9 · Frames nothing could be established"));
+        assert!(!h.contains("<h2>2 · Shots"));
+        assert!(!h.contains("<h2>9 · What this report cannot say"));
+    }
+
+    #[test]
+    fn a_failed_chain_still_closes_the_layout() {
+        let r = base();
+        let h = render(
+            &r,
+            &PageInputs {
+                chain_passed: false,
+                ..inputs()
+            },
+        );
+        assert!(h.contains("<div class=\"layout\"><div class=\"main\">"));
+        assert!(h.contains("compare against.</p>\n</section>\n</div></div>"));
     }
 
     #[test]
