@@ -56,6 +56,20 @@ jobs:
           grep -qE 'src="http|href="http|@import|fetch\("http' dist/edit-report.html \
             && { echo 'the page addresses a host'; exit 1; } || true
           grep -q '__EDIT_REPORT_WASM__' dist/edit-report.html
+      # The same commit from a second directory must give the same bytes.
+      # This is the property the published hash rests on, and it was lost
+      # once without anything noticing: a symbol suffix derived from the
+      # object path, which the remap flags never touched. Now it is a test.
+      - name: The page must not depend on where it was built
+        run: |
+          mkdir -p /tmp/elsewhere
+          git archive HEAD | tar -x -C /tmp/elsewhere
+          (cd /tmp/elsewhere && ./web/build-single.sh)
+          a=$(sha256sum dist/edit-report.html | cut -d' ' -f1)
+          b=$(sha256sum /tmp/elsewhere/dist/edit-report.html | cut -d' ' -f1)
+          echo "here:      $a"
+          echo "elsewhere: $b"
+          [ "$a" = "$b" ] || { echo 'the build depends on its directory'; exit 1; }
 
   # End-to-end against a real bundle, on the one platform where installing
   # ffmpeg and Python is a one-liner. Proves the parts fit together, which no

@@ -34,14 +34,20 @@ mkdir -p "$OUT"
 # people building the same commit get different bytes and a published hash is
 # a number nobody can check.
 #
-# This is necessary and not yet sufficient: the toolchain version is not
-# pinned, so a different rustc still produces different bytes. Pinning it is
-# the remaining step before the hash below means anything across machines.
+# Necessary, not sufficient on its own. The other two halves: the toolchain
+# is pinned in rust-toolchain.toml, and the release profile uses one codegen
+# unit (see the workspace Cargo.toml for why — the last path-dependent bytes
+# were in a symbol suffix the remap cannot reach). With all three, the same
+# commit built from two different directories gives the same file; the CI
+# checks exactly that on every push.
+#
+# --locked: build from the committed Cargo.lock or fail. A page that quietly
+# resolved a different dependency set is not the thing that was reviewed.
 rustup target add wasm32-unknown-unknown >/dev/null 2>&1 || true
-RUSTFLAGS="--remap-path-prefix=$HOME/.rustup=/rustup \
-           --remap-path-prefix=$HOME/.cargo=/cargo \
+RUSTFLAGS="--remap-path-prefix=${RUSTUP_HOME:-$HOME/.rustup}=/rustup \
+           --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/cargo \
            --remap-path-prefix=$PWD=/src" \
-  cargo build --release -p edit-report-wasm --target wasm32-unknown-unknown
+  cargo build --release --locked -p edit-report-wasm --target wasm32-unknown-unknown
 
 WASM=target/wasm32-unknown-unknown/release/edit_report_wasm.wasm
 if strings -a "$WASM" 2>/dev/null | grep -q "$HOME"; then

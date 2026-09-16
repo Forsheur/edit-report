@@ -309,12 +309,21 @@ Every tagged build is produced by CI, never on a developer machine, and
 published as a permanent GitHub Release with `SHA256SUMS` covering every file.
 
     # Where did this file come from?
-    gh attestation verify edit-report.html --repo <owner>/edit-report
+    gh attestation verify edit-report.html --repo forsheur/edit-report
 
     # Does it match the source?
     git checkout v0.1.0
     ./web/build-single.sh
     shasum -a 256 dist/edit-report.html      # must equal the published digest
+
+Three things make that rebuild land on the same bytes, and all three are in
+the repository rather than in anyone's head: the compiler version
+(`rust-toolchain.toml`), the dependency set (`Cargo.lock`, built with
+`--locked`), and a release profile with a single codegen unit (workspace
+`Cargo.toml` — the default sixteen leave a path-derived hash in one symbol
+suffix, which was the last thing that differed between two checkouts of the
+same commit). Paths are remapped out of the binary on top of that. The CI
+builds the page twice, from two directories, and fails if the two differ.
 
 The attestation is a signed statement, in a public transparency log, that this
 file was produced by this workflow from this commit. It says where the file

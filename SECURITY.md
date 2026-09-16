@@ -206,9 +206,22 @@ bundle is where the exposure now lives, and it is outside this tool.**
 
 ## Reproducibility
 
-Dependencies are pinned to exact versions, `Cargo.lock` is committed for
-binaries as well as libraries, and release builds happen in CI from a tagged
-commit. SHA-256 sums of released binaries are published with each release.
+A published hash is only worth something if someone else can arrive at it. So:
+dependencies are pinned to exact versions and `Cargo.lock` is committed for
+binaries as well as libraries; the compiler version is pinned in
+`rust-toolchain.toml`; the release profile uses one codegen unit, because with
+more LLVM suffixes promoted symbols with a hash derived from the object file's
+path, and that suffix was — measured — the only difference between two builds
+of the same commit from two directories; and paths are remapped out of the
+binary. Release builds happen in CI from a tagged commit, with a signed
+provenance attestation and `SHA256SUMS`. The CI also builds the browser page
+twice from two directories and fails if they differ, so a regression here
+cannot pass unnoticed.
+
+What is not yet demonstrated: that a build on macOS and one on the Linux
+runner give the same bytes. The wasm target has no host in it and the LLVM is
+the same, so they should; the first release will say. If they do not, the
+canonical build becomes a container at a fixed path, which anyone can run.
 
 ---
 
@@ -239,7 +252,8 @@ rather than drift past by accident.
 
 Open an issue for anything that is not itself a vulnerability. For a
 vulnerability in this tool, or a way to make it produce a report that misleads,
-contact the maintainers privately first.
+contact the maintainers privately first: **security@forsheur.com**, or the
+repository's private vulnerability reporting on GitHub.
 
 A report that says "this tool called a legitimate video falsified" is treated as
 a security issue, not a cosmetic one. That is the failure mode this whole design

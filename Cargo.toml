@@ -18,3 +18,15 @@ repository = "https://github.com/forsheur/edit-report"
 [workspace.dependencies]
 serde = { version = "=1.0.219", features = ["derive"] }
 serde_json = "=1.0.140"
+
+# One codegen unit, for reproducibility rather than speed. With the default
+# sixteen, LLVM promotes local symbols across units and suffixes them with a
+# hash (`.llvm.<n>`) derived from the object file's path — which
+# --remap-path-prefix does not reach. Measured: the same sources built from
+# two directories gave two different wasm files, differing in exactly that
+# suffix and nothing else. With one unit there is nothing to promote, and the
+# two builds are byte-identical (and the wasm 17 kB smaller). Cargo's
+# `trim-paths` would be the clean answer; it is not stable in the pinned
+# toolchain.
+[profile.release]
+codegen-units = 1

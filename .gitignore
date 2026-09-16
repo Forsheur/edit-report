@@ -20,3 +20,6 @@
 # Output of web/build-single.sh — a build artefact, published as a release
 # asset rather than committed.
 /dist/
+
+# Finder's droppings.
+.DS_Store
