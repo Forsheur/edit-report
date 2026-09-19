@@ -187,10 +187,28 @@ fn section_crypto(h: &mut String, r: &Report) {
 
     if let Some(v) = &r.original.crypto.verifier {
         if let Some(sha) = &v.sha256 {
+            // The version is named alongside the digest because the digest
+            // alone is not actionable: a reader who wants to check that this
+            // verifier is the published one has to know which release to
+            // compare against, and an older bundle legitimately carries an
+            // older verifier. The published location is written as text, not
+            // as a link -- every report in this tool loads nothing, and a
+            // rendered document that fetched something would break the
+            // no-network promise after the fact.
+            let ver = v
+                .version
+                .as_deref()
+                .map(|x| format!(" version <code>{}</code>,", esc(x)))
+                .unwrap_or_default();
             h.push_str(&format!(
                 "<p class=\"note\">Checked by the verifier shipped inside this bundle, \
-                 <code>verify_bundle.py</code>, SHA-256 <code>{}</code>. This tool contains no \
-                 second implementation of those checks.</p>\n",
+                 <code>verify_bundle.py</code>,{} SHA-256 <code>{}</code>. This tool contains no \
+                 second implementation of those checks. That verifier arrived inside the archive \
+                 it vouches for, so if this bundle matters, compare that digest against the \
+                 published releases at github.com/Forsheur/verify-bundle, or against the copy a \
+                 Forsheur server publishes at <code>/verifier.sha256</code>. A digest matching an \
+                 older release is the ordinary case; one matching no published release is not.</p>\n",
+                ver,
                 esc(sha)
             ));
         }

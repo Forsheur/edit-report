@@ -43,6 +43,20 @@ pub struct Check {
 pub struct VerifierIdentity {
     pub path: Option<String>,
     pub sha256: Option<String>,
+    /// The release the verifier declares, e.g. `1.0.0`.
+    ///
+    /// `Option` and `serde(default)`, not required: bundles generated before
+    /// the verifier declared a version are ordinary bundles, not suspect ones,
+    /// and refusing to parse their summary would turn an upgrade of ours into
+    /// a finding about somebody's recording.
+    ///
+    /// Why it is worth carrying at all: a hash alone is ambiguous. A reader
+    /// comparing theirs against the published releases needs to know *which*
+    /// release to expect, because an older bundle legitimately carries an
+    /// older verifier and that must stay distinguishable from a verifier
+    /// matching no published release at all.
+    #[serde(default)]
+    pub version: Option<String>,
 }
 
 /// `verify_bundle.py --json`, parsed.
@@ -280,6 +294,7 @@ mod tests {
             verifier: Some(VerifierIdentity {
                 path: None,
                 sha256: Some("2bad1c66".into()),
+                version: Some("1.0.0".into()),
             }),
         }
     }

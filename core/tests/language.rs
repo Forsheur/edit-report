@@ -149,6 +149,7 @@ fn verified() -> CryptoState {
         verifier: Some(VerifierIdentity {
             path: None,
             sha256: Some("2bad1c66".into()),
+            version: Some("1.0.0".into()),
         }),
         checks: Vec::new(),
     }
@@ -728,6 +729,53 @@ fn every_case_renders_a_self_contained_document() {
             );
         }
     }
+}
+
+#[test]
+fn the_verifier_note_tells_the_reader_how_to_check_the_verifier() {
+    // The verifier runs from inside the bundle it vouches for. Naming its
+    // digest is only useful if the reader is also told what to compare it
+    // against, and that the ordinary case -- an older bundle carrying an older
+    // verifier -- is not a finding. This sentence is the only place the report
+    // says so, so it is pinned here rather than left to drift.
+    let (_, report) = legitimate_cases().into_iter().next().unwrap();
+    let html = html::render(&report);
+    assert!(html.contains("2bad1c66"), "the digest is not named");
+    assert!(html.contains("1.0.0"), "the version is not named");
+    assert!(
+        html.contains("Forsheur/verify-bundle"),
+        "the reader is not told where an independent copy lives"
+    );
+    assert!(
+        html.contains("no second implementation"),
+        "the report stopped saying it re-implements nothing"
+    );
+    // And the escape hatch stays: naming a location must not make the document
+    // fetch one. Covered generally elsewhere; asserted here because this is
+    // the sentence that introduced a URL into the report.
+    for forbidden in ["<script", "<img", "<link", "src=", "href="] {
+        assert!(
+            !html.contains(forbidden),
+            "became a live resource: {forbidden:?}"
+        );
+    }
+}
+
+#[test]
+fn a_bundle_whose_verifier_predates_versioning_still_renders() {
+    // A bundle made before the verifier declared a version is an ordinary
+    // bundle, not a suspect one. The note must degrade to naming the digest
+    // alone rather than printing an empty version or refusing to render.
+    let (_, mut report) = legitimate_cases().into_iter().next().unwrap();
+    if let Some(v) = report.original.crypto.verifier.as_mut() {
+        v.version = None;
+    }
+    let html = html::render(&report);
+    assert!(html.contains("2bad1c66"), "the digest is not named");
+    assert!(
+        !html.contains("version <code></code>"),
+        "empty version rendered"
+    );
 }
 
 #[test]
